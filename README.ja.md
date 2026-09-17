@@ -1,5 +1,12 @@
 # Star Savior 10 消去ヘルパー
 
+![platform](https://img.shields.io/badge/platform-Windows-blue)
+![python](https://img.shields.io/badge/python-3.13-blue)
+![release](https://img.shields.io/github/v/release/Sid-1996/starsavior-make10-helper)
+![downloads](https://img.shields.io/github/downloads/Sid-1996/starsavior-make10-helper/total)
+![stars](https://img.shields.io/github/stars/Sid-1996/starsavior-make10-helper)
+![license](https://img.shields.io/github/license/Sid-1996/starsavior-make10-helper)
+
 [繁體中文](README.md) | [English](README.en.md) | 日本語 | [한국어](README.ko.md)
 
 「数字 10 消去ゲーム」の視覚アシストツール。**画面を解析してヒントを表示するだけで、ゲームには一切触りません**。マウス操作はすべてユーザーが行います。

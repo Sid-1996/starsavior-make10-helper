@@ -1,5 +1,12 @@
 # Star Savior 10 Match Helper
 
+![platform](https://img.shields.io/badge/platform-Windows-blue)
+![python](https://img.shields.io/badge/python-3.13-blue)
+![release](https://img.shields.io/github/v/release/Sid-1996/starsavior-make10-helper)
+![downloads](https://img.shields.io/github/downloads/Sid-1996/starsavior-make10-helper/total)
+![stars](https://img.shields.io/github/stars/Sid-1996/starsavior-make10-helper)
+![license](https://img.shields.io/github/license/Sid-1996/starsavior-make10-helper)
+
 [繁體中文](README.md) | English | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 A visual assistant for the "make-10" number-matching game. **It only analyzes the screen and shows visual hints — it never touches the game**; all mouse actions are yours.

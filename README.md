@@ -1,5 +1,12 @@
 # Star Savior 10 消除提示器
 
+![platform](https://img.shields.io/badge/platform-Windows-blue)
+![python](https://img.shields.io/badge/python-3.13-blue)
+![release](https://img.shields.io/github/v/release/Sid-1996/starsavior-make10-helper)
+![downloads](https://img.shields.io/github/downloads/Sid-1996/starsavior-make10-helper/total)
+![stars](https://img.shields.io/github/stars/Sid-1996/starsavior-make10-helper)
+![license](https://img.shields.io/github/license/Sid-1996/starsavior-make10-helper)
+
 繁體中文 | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
 「數字 10 消除遊戲」的視覺輔助提示器。**只分析畫面並提供視覺提示，不操作遊戲**，滑鼠操作完全由使用者自己完成。

@@ -1,5 +1,12 @@
 # Star Savior 10 제거 도우미
 
+![platform](https://img.shields.io/badge/platform-Windows-blue)
+![python](https://img.shields.io/badge/python-3.13-blue)
+![release](https://img.shields.io/github/v/release/Sid-1996/starsavior-make10-helper)
+![downloads](https://img.shields.io/github/downloads/Sid-1996/starsavior-make10-helper/total)
+![stars](https://img.shields.io/github/stars/Sid-1996/starsavior-make10-helper)
+![license](https://img.shields.io/github/license/Sid-1996/starsavior-make10-helper)
+
 [繁體中文](README.md) | [English](README.en.md) | [日本語](README.ja.md) | 한국어
 
 "숫자 10 제거 게임"의 시각 보조 도우미. **화면을 분석して 힌트만 보여주고, 게임을 조작하지 않습니다**. 마우스 조작은 전부 사용자가 합니다.
