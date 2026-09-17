@@ -7,9 +7,19 @@
 到 [**Releases](../../releases)** 下載 `StarSaviorHelper.exe`，雙擊即用：
 免安裝、設定檔（`settings.json`）和日誌都留在 exe 旁邊，刪掉 exe 即乾淨移除。
 
-<!-- 操作示意圖：把圖放進 docs/images/ 後取消下面兩行的註解
-![操作示意](docs/images/demo.png)
--->
+## 操作示意
+
+**開局**：滿盤時一次顯示前 N 組彩色編號提示，1 號綠框照著打：
+
+![開局滿盤提示](docs/images/demo-early.webp)
+
+**中盤**：消除留下的空格可跨越，提示自動跟著新盤面走：
+
+![中盤提示](docs/images/demo-mid.webp)
+
+**後盤**：剩餘數字稀疏時，提示照樣精準定位：
+
+![後盤提示](docs/images/demo-late.webp)
 
 ## 功能亮點
 
