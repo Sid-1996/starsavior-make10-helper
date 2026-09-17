@@ -1,12 +1,14 @@
-"""透明 Click-through Overlay：只顯示矩形外框 + 起點 + 終點。
+"""透明 Click-through Overlay：顯示前 N 個推薦矩形的外框 + 起點 + 終點。
 
 - 透明、置頂、不接收滑鼠（WindowTransparentForInput）、不搶焦點
   （WindowDoesNotAcceptFocus + ShowWithoutActivating）、工作列無圖示（Tool）。
-- 一次只顯示一個推薦矩形；不顯示文字、不送出任何滑鼠事件、不操作遊戲。
+- 第 1 個是首選（亮綠粗框＋大圓點，照著打），第 2..N 個是備選
+  （琥珀色細框＋小圓點）；不顯示文字、不送出任何滑鼠事件、不操作遊戲。
 - 座標沿用實體螢幕像素（與 ROI / Grid 同一座標系）；Overlay 佔滿整個
   虛擬桌面，繪製時再平移。
-- Overlay 繪製層與 Screen Capture 必須分離：擷取前務必先隱藏 Overlay，
-  否則框線會被截進去污染辨識（見 hide_hint，呼叫端在擷取前呼叫）。
+- Overlay 繪製層與 Screen Capture 必須分離：前景擷取前務必先隱藏 Overlay，
+  否則框線會被截進去污染辨識（見 hide_hint，呼叫端在擷取前呼叫；
+  後台幀不可能含 Overlay，無此問題）。
 
 純幾何部分（hint_shapes）不依賴 Qt，可獨立測試。
 """
@@ -25,6 +27,8 @@ from core.solver import Rectangle
 
 _BORDER_WIDTH = 3
 _DOT_RADIUS = 7
+_SECONDARY_BORDER_WIDTH = 2
+_SECONDARY_DOT_RADIUS = 5
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,18 @@ class HintShapes:
     border: tuple[float, float, float, float]  # (x0, y0, x1, y1)
     start: tuple[float, float]  # 第一格 center（滑鼠按住點）
     end: tuple[float, float]  # 最後一格 center（滑鼠放開點）
+
+
+def _is_overlay_pixel(color) -> bool:
+    """是否為 Overlay 筆跡（亮綠首選框或琥珀備選框；棋盤白/灰/黑不會命中）。"""
+    green = color.green() >= 200 and color.green() - color.red() >= 120
+    amber = (
+        color.red() >= 200
+        and color.green() >= 140
+        and color.blue() <= 120
+        and color.red() - color.blue() >= 100
+    )
+    return green or amber
 
 
 def overlay_present(
@@ -66,7 +82,7 @@ def overlay_present(
         if not 0 <= px < image.width() or not 0 <= py < image.height():
             continue
         color = image.pixelColor(px, py)
-        if color.green() >= 200 and color.green() - color.red() >= 120:
+        if _is_overlay_pixel(color):
             hits += 1
     return hits >= 2
 
@@ -76,38 +92,52 @@ def paint_hint(
     border: tuple[float, float, float, float],
     start: tuple[float, float],
     end: tuple[float, float],
+    primary: bool = True,
 ) -> None:
-    """把外框 + 起終點畫到任意 QPainter（widget 座標）；供測試直接打到 QImage。"""
+    """把外框 + 起終點畫到任意 QPainter（widget 座標）；供測試直接打到 QImage。
+
+    primary=True 是首選（亮綠粗框大圓點），False 是備選（琥珀細框小圓點）。
+    """
     x0, y0, x1, y1 = border
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    # 外框：先畫黑底襯線確保在白色 tile 上可見，再畫亮綠主線
+    if primary:
+        main_color = QColor(0, 255, 0, 255)
+        end_color = QColor(0, 255, 255, 255)
+        border_width = _BORDER_WIDTH
+        dot_radius = _DOT_RADIUS
+    else:
+        main_color = QColor(255, 176, 0, 255)
+        end_color = QColor(255, 176, 0, 255)
+        border_width = _SECONDARY_BORDER_WIDTH
+        dot_radius = _SECONDARY_DOT_RADIUS
+    # 外框：先畫黑底襯線確保在白色 tile 上可見，再畫主線
     for color, width in (
-        (QColor(0, 0, 0, 220), _BORDER_WIDTH + 3),
-        (QColor(0, 255, 0, 255), _BORDER_WIDTH),
+        (QColor(0, 0, 0, 220), border_width + 3),
+        (main_color, border_width),
     ):
         pen = QPen(color)
         pen.setWidth(width)
         painter.setPen(pen)
         painter.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
-    # 起點（綠）/ 終點（青）：黑圈襯底 + 實心圓點
-    for point, color in ((start, QColor(0, 255, 0, 255)), (end, QColor(0, 255, 255, 255))):
+    # 起點 / 終點：黑圈襯底 + 實心圓點
+    for point, color in ((start, main_color), (end, end_color)):
         painter.setPen(QPen(QColor(0, 0, 0, 220), 2))
         painter.drawEllipse(
             QRectF(
-                point[0] - _DOT_RADIUS - 1,
-                point[1] - _DOT_RADIUS - 1,
-                2 * (_DOT_RADIUS + 1),
-                2 * (_DOT_RADIUS + 1),
+                point[0] - dot_radius - 1,
+                point[1] - dot_radius - 1,
+                2 * (dot_radius + 1),
+                2 * (dot_radius + 1),
             )
         )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
         painter.drawEllipse(
             QRectF(
-                point[0] - _DOT_RADIUS,
-                point[1] - _DOT_RADIUS,
-                2 * _DOT_RADIUS,
-                2 * _DOT_RADIUS,
+                point[0] - dot_radius,
+                point[1] - dot_radius,
+                2 * dot_radius,
+                2 * dot_radius,
             )
         )
 
@@ -154,7 +184,7 @@ class HintOverlay(QWidget):
             desktop = self._virtual_geometry()
         self._origin = (desktop[0], desktop[1])
         self.setGeometry(*desktop)
-        self._shapes: HintShapes | None = None
+        self._shapes: list[HintShapes] = []
 
     @staticmethod
     def _virtual_geometry() -> tuple[int, int, int, int]:
@@ -168,23 +198,32 @@ class HintOverlay(QWidget):
         return (left, top, right - left, bottom - top)
 
     @property
-    def current_shapes(self) -> HintShapes | None:
-        return self._shapes
+    def current_shapes(self) -> list[HintShapes]:
+        return list(self._shapes)
 
     @property
     def origin(self) -> tuple[int, int]:
         """虛擬桌面原點（繪製座標 = 螢幕座標 - 原點）。"""
         return self._origin
 
-    def show_hint(self, rectangle: Rectangle, geometries: Sequence[CellGeometry]) -> None:
-        """顯示推薦矩形（會自動顯示視窗；不搶焦點）。"""
-        self._shapes = hint_shapes(rectangle, geometries)
+    def show_hints(
+        self, rectangles: Sequence[Rectangle], geometries: Sequence[CellGeometry]
+    ) -> None:
+        """顯示前 N 個推薦（第 1 個是首選；會自動顯示視窗；不搶焦點）。"""
+        self._shapes = [hint_shapes(rect, geometries) for rect in rectangles]
         self.update()
-        self.show()
+        if self._shapes:
+            self.show()
+        else:
+            self.hide()
+
+    def show_hint(self, rectangle: Rectangle, geometries: Sequence[CellGeometry]) -> None:
+        """顯示單一推薦矩形（show_hints 的特例）。"""
+        self.show_hints([rectangle], geometries)
 
     def hide_hint(self) -> None:
-        """隱藏提示（擷取螢幕前必須先呼叫，避免污染辨識）。"""
-        self._shapes = None
+        """隱藏提示（前景擷取前必須先呼叫，避免污染辨識）。"""
+        self._shapes = []
         self.hide()
 
     def _to_local(
@@ -197,7 +236,12 @@ class HintOverlay(QWidget):
         return ((x0 - ox, y0 - oy, x1 - ox, y1 - oy), (sx - ox, sy - oy), (ex - ox, ey - oy))
 
     def paintEvent(self, event) -> None:
-        if self._shapes is None:
+        if not self._shapes:
             return
-        border, start, end = self._to_local(self._shapes)
-        paint_hint(QPainter(self), border, start, end)
+        painter = QPainter(self)
+        # 備選先畫，首選最後畫（壓在上層）
+        for shapes in self._shapes[1:]:
+            border, start, end = self._to_local(shapes)
+            paint_hint(painter, border, start, end, primary=False)
+        border, start, end = self._to_local(self._shapes[0])
+        paint_hint(painter, border, start, end, primary=True)

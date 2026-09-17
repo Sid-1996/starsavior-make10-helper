@@ -88,7 +88,7 @@ class TestHotkeyToggleWiring:
                     cells.append(Cell(row, column, CellState.DIGIT, digit=6))
                 else:
                     cells.append(Cell(row, column, CellState.EMPTY))
-        win._show_board_hint(BoardState(cells=cells))
+        win._show_board_hints(BoardState(cells=cells))
         return win
 
     def test_f8_toggles_monitoring(self, qapp, tmp_path):
@@ -133,7 +133,7 @@ class TestHotkeyToggleWiring:
 
         win = self._window_with_hint(qapp, tmp_path)
         win._monitor = BoardMonitor()
-        win._monitor.hint = Hint(Rectangle(0, 0, 0, 1, 10, 2, 0, 2), 1)
+        win._monitor.hints = [Hint(Rectangle(0, 0, 0, 1, 10, 2, 0, 2), 1)]
         win._overlay_muted = True
         win._overlay.hide()
         win._restore_overlay()

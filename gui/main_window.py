@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -43,7 +44,7 @@ from core import board_align, game_window, screen_capture, window_capture
 from core.board_builder import build_board_state
 from core.game_window import WindowInfo
 from core.grid import build_grid
-from core.hint_selector import Hint, select_hint
+from core.hint_selector import MAX_HINT_COUNT, select_hints
 from core.monitor import BoardMonitor, MonitorConfig
 from core.recognition import DigitRecognizer
 from core.roi_model import GRID_COLS, GRID_ROWS, Roi, RoiFrac, rect_iou
@@ -101,6 +102,9 @@ class MainWindow(QMainWindow):
         self.chk_topmost.setChecked(topmost)
         self.chk_topmost.blockSignals(False)
         self._apply_topmost(topmost)
+        self.spin_hints.blockSignals(True)
+        self.spin_hints.setValue(self._store.load_max_hints())
+        self.spin_hints.blockSignals(False)
         if not self._hotkey.start():
             self.btn_hide_hint.setToolTip(
                 "隱藏 Overlay 提示（F8 全域快捷鍵註冊失敗，只能用此按鈕）。"
@@ -155,6 +159,9 @@ class MainWindow(QMainWindow):
         )
         self.chk_topmost = QCheckBox("主視窗置頂")
         self.chk_topmost.setToolTip("單螢幕全螢幕遊戲時保持主視窗可操作；偏好會記住。")
+        self.spin_hints = QSpinBox()
+        self.spin_hints.setRange(1, MAX_HINT_COUNT)
+        self.spin_hints.setToolTip("同時顯示幾組提示（首選＋備選）；偏好會記住。")
         self.btn_start = QPushButton("開始監控")
         self.btn_stop = QPushButton("停止監控")
         self.btn_align.setToolTip(
@@ -175,6 +182,11 @@ class MainWindow(QMainWindow):
         ):
             btn_box.addWidget(btn)
         btn_box.addWidget(self.chk_topmost)
+        hints_row = QHBoxLayout()
+        hints_row.addWidget(QLabel("同時提示數："))
+        hints_row.addWidget(self.spin_hints)
+        hints_row.addStretch(1)
+        btn_box.addLayout(hints_row)
         roi_layout.addLayout(btn_box, 0, 2, 4, 1)
         root.addWidget(roi_group)
 
@@ -219,6 +231,7 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self._on_start_monitor)
         self.btn_stop.clicked.connect(self._on_stop_monitor)
         self.chk_topmost.toggled.connect(self._on_topmost_toggled)
+        self.spin_hints.valueChanged.connect(self._on_hints_count_changed)
         self.spin_x.valueChanged.connect(self._on_spin_changed)
         self.spin_y.valueChanged.connect(self._on_spin_changed)
         self.spin_w.valueChanged.connect(self._on_spin_changed)
@@ -365,6 +378,9 @@ class MainWindow(QMainWindow):
         self._store.save_always_on_top(checked)
         self._apply_topmost(checked)
         self.show()  # flag 變更需重秀才生效
+
+    def _on_hints_count_changed(self, value: int) -> None:
+        self._store.save_max_hints(value)
 
     def _on_hide_hint(self) -> None:
         self._overlay_muted = True
@@ -556,7 +572,7 @@ class MainWindow(QMainWindow):
             )
             return
         try:
-            hint = self._show_board_hint(board)
+            hints = self._show_board_hints(board)
         except Exception:
             self.recognition_panel.show_message(
                 self.recognition_panel._matrix_label.text()
@@ -564,27 +580,32 @@ class MainWindow(QMainWindow):
                 + traceback.format_exc()
             )
             return
-        if hint is None:
+        if not hints:
             self.recognition_panel.show_message(
                 self.recognition_panel._matrix_label.text() + "\n\n此盤面無合法矩形（總和=10）。"
             )
             return
-        rect = hint.rectangle
+        rect = hints[0].rectangle
+        extra = f"（另有 {len(hints) - 1} 個備選）" if len(hints) > 1 else ""
         self.recognition_panel.show_message(
             self.recognition_panel._matrix_label.text()
             + f"\n\n已在 Overlay 顯示提示：({rect.row1},{rect.col1})→({rect.row2},{rect.col2})"
-            f" area={rect.area}（共 {hint.candidate_count} 個候選）。"
+            f" area={rect.area}（共 {hints[0].candidate_count} 個候選）{extra}。"
             "可用「隱藏提示」關閉。"
         )
 
-    def _show_board_hint(self, board):
-        """對無 UNKNOWN 的棋盤計算提示並顯示 Overlay；回傳 Hint（供測試直接呼叫）。"""
-        self._overlay_muted = False  # 使用者手動要求顯示，解除 F8 靜音
-        hint: Hint | None = select_hint(find_rectangles(board))
-        if hint is None or self._roi is None:
-            return None
-        self._overlay.show_hint(hint.rectangle, build_grid(self._roi))
-        return hint
+    def _hint_limit(self) -> int:
+        """同時顯示的提示數量（使用者偏好，存檔記住）。"""
+        return self._store.load_max_hints()
+
+    def _show_board_hints(self, board) -> list:
+        """對無 UNKNOWN 的棋盤計算前 N 個提示並顯示 Overlay；回傳 Hint 列。"""
+        self._overlay_muted = False  # 使用者手動要求顯示，解除靜音
+        hints = select_hints(find_rectangles(board), limit=self._hint_limit())
+        if not hints or self._roi is None:
+            return []
+        self._overlay.show_hints([hint.rectangle for hint in hints], build_grid(self._roi))
+        return hints
 
     # ------------------------------------------------------------------ #
     # 監控迴圈：畫面變化 → 等待穩定 → 乾淨重辨識 → Hint Lock
@@ -696,11 +717,13 @@ class MainWindow(QMainWindow):
                 self._update_status()
         if (
             self._monitor is not None
-            and self._monitor.hint is not None
+            and self._monitor.hints
             and self._roi is not None
             and not self._overlay_muted
         ):
-            self._overlay.show_hint(self._monitor.hint.rectangle, build_grid(self._roi))
+            self._overlay.show_hints(
+                [hint.rectangle for hint in self._monitor.hints], build_grid(self._roi)
+            )
 
     def _on_stop_monitor(self) -> None:
         self._monitor_timer.stop()
@@ -732,10 +755,10 @@ class MainWindow(QMainWindow):
             f"監控狀態：監控中 #{self._monitor_ticks} 穩定{tracker_run}/{required}{note}"
         )
 
-    def _capture_clean(self, shapes) -> object | None:
+    def _capture_clean(self, shapes: list) -> object | None:
         """隱藏 Overlay 後擷取；殘留筆跡則重試（有上限，不無限等待）。
 
-        shapes: 隱藏前的提示幾何（None 表示本來就沒顯示，無需驗證）。
+        shapes: 隱藏前的提示幾何列（空串列表示本來就沒顯示，無需驗證）。
         回傳彩色 QImage（呼叫端再轉灰階）；重試用盡回傳 None（呼叫端放棄本次重建，
         避免把污染幀餵給辨識器）；擷取失敗直接丟例外。
         """
@@ -745,9 +768,11 @@ class MainWindow(QMainWindow):
         retries = 0
         while True:
             image = screen_capture.capture_roi(self._roi)
-            if shapes is None or not overlay_present(
-                image, shapes, self._roi, self._overlay.origin
-            ):
+            polluted = any(
+                overlay_present(image, shapes_one, self._roi, self._overlay.origin)
+                for shapes_one in shapes
+            )
+            if not polluted:
                 if retries:
                     self._monitor_log(f"clean capture ok after {retries} retries")
                 return image
@@ -865,18 +890,22 @@ class MainWindow(QMainWindow):
                 return
             self._restore_overlay()
         self._log_board_summary(board)
-        snapshot = self._monitor.commit_board(board)
+        snapshot = self._monitor.commit_board(board, max_hints=self._hint_limit())
         if snapshot.changed:
             self.recognition_panel.show_board(board, self._templates.missing())
-            if snapshot.hint is None or self._overlay_muted:
+            if not snapshot.hints or self._overlay_muted:
                 if not self._overlay_muted:
                     self._overlay.hide_hint()
             else:
                 assert self._roi is not None
-                self._overlay.show_hint(snapshot.hint.rectangle, build_grid(self._roi))
-            rect = snapshot.hint.rectangle if snapshot.hint else None
-            self._monitor_note = f"已更新提示 {rect}" if rect else "此盤無合法矩形"
-            self._monitor_log(f"hint updated rect={rect}")
+                self._overlay.show_hints(
+                    [hint.rectangle for hint in snapshot.hints], build_grid(self._roi)
+                )
+            first = snapshot.hints[0].rectangle if snapshot.hints else None
+            self._monitor_note = (
+                f"已更新提示 {first}（共 {len(snapshot.hints)} 組）" if first else "此盤無合法矩形"
+            )
+            self._monitor_log(f"hints updated count={len(snapshot.hints)} first={first}")
         elif board.has_unknown():
             self._monitor_note = "維持提示（UNKNOWN，等下次穩定畫面）"
             self._monitor_log("keep hint (UNKNOWN)")
@@ -893,10 +922,12 @@ class MainWindow(QMainWindow):
         if (
             not self._overlay_muted
             and self._monitor is not None
-            and self._monitor.hint is not None
+            and self._monitor.hints
             and self._roi is not None
         ):
-            self._overlay.show_hint(self._monitor.hint.rectangle, build_grid(self._roi))
+            self._overlay.show_hints(
+                [hint.rectangle for hint in self._monitor.hints], build_grid(self._roi)
+            )
 
     def closeEvent(self, event) -> None:
         self._hotkey.stop()

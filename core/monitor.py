@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from core.board_state import BoardState
-from core.hint_selector import Hint, select_hint
+from core.hint_selector import DEFAULT_HINT_COUNT, Hint, select_hints
 from core.solver import find_rectangles
 
 
@@ -109,19 +109,19 @@ class MonitorSnapshot:
     """commit_board 的結果快照。"""
 
     rebuilt: bool  # 是否接受了新 board（UNKNOWN 不接受）
-    changed: bool  # 棋盤是否有效變化（hint 是否已更新）
+    changed: bool  # 棋盤是否有效變化（hints 是否已更新）
     board: BoardState | None
-    hint: Hint | None
+    hints: list[Hint]
 
 
 @dataclass
 class BoardMonitor:
-    """持有穩定追蹤 + 目前棋盤 + 目前提示（Hint Lock）。"""
+    """持有穩定追蹤 + 目前棋盤 + 目前提示列（Hint Lock）。"""
 
     config: MonitorConfig = field(default_factory=MonitorConfig)
     tracker: StabilityTracker = field(init=False)
     board: BoardState | None = field(default=None, init=False)
-    hint: Hint | None = field(default=None, init=False)
+    hints: list[Hint] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.tracker = StabilityTracker(self.config)
@@ -134,17 +134,19 @@ class BoardMonitor:
         """重設基準（見 StabilityTracker.rebaseline）。"""
         self.tracker.rebaseline(frame)
 
-    def commit_board(self, board: BoardState) -> MonitorSnapshot:
-        """提交乾淨重辨識的結果；回傳 hint 是否更新。
+    def commit_board(
+        self, board: BoardState, max_hints: int = DEFAULT_HINT_COUNT
+    ) -> MonitorSnapshot:
+        """提交乾淨重辨識的結果；回傳 hints 是否更新。
 
         - UNKNOWN：維持舊提示，等待下一次穩定畫面（§八）。
         - 語意不變：維持舊提示（Hint Lock，§十七）。
-        - 有效變化：重新 Solver + 選新 Hint（可能無候選 → hint 為 None）。
+        - 有效變化：重新 Solver + 選前 max_hints 個 Hint（可能無候選 → 空串列）。
         """
         if board.has_unknown():
-            return MonitorSnapshot(rebuilt=False, changed=False, board=self.board, hint=self.hint)
+            return MonitorSnapshot(rebuilt=False, changed=False, board=self.board, hints=self.hints)
         if self.board is not None and board_key(board) == board_key(self.board):
-            return MonitorSnapshot(rebuilt=False, changed=False, board=self.board, hint=self.hint)
+            return MonitorSnapshot(rebuilt=False, changed=False, board=self.board, hints=self.hints)
         self.board = board
-        self.hint = select_hint(find_rectangles(board))
-        return MonitorSnapshot(rebuilt=True, changed=True, board=self.board, hint=self.hint)
+        self.hints = select_hints(find_rectangles(board), limit=max_hints)
+        return MonitorSnapshot(rebuilt=True, changed=True, board=self.board, hints=self.hints)

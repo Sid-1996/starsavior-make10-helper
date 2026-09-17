@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from core.game_window import DEFAULT_GAME_TITLE
+from core.hint_selector import DEFAULT_HINT_COUNT, MAX_HINT_COUNT
 from core.roi_model import Roi, RoiFrac
 
 DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.json"
@@ -125,4 +126,20 @@ class SettingsStore:
             ui = {}
             data["ui"] = ui
         ui["always_on_top"] = enabled
+        self._write(data)
+
+    def load_max_hints(self) -> int:
+        """同時顯示的提示數量（1~10，預設 5）。"""
+        ui = self._read().get("ui")
+        if isinstance(ui, dict) and isinstance(ui.get("max_hints"), int):
+            return max(1, min(MAX_HINT_COUNT, ui["max_hints"]))
+        return DEFAULT_HINT_COUNT
+
+    def save_max_hints(self, count: int) -> None:
+        data = self._read()
+        ui = data.get("ui")
+        if not isinstance(ui, dict):
+            ui = {}
+            data["ui"] = ui
+        ui["max_hints"] = max(1, min(MAX_HINT_COUNT, count))
         self._write(data)

@@ -1,7 +1,7 @@
 """Hint Selector 單元測試（純函式，不碰螢幕/GUI）。"""
 
 from core.board_state import BoardState, Cell, CellState
-from core.hint_selector import Hint, select_hint
+from core.hint_selector import Hint, select_hint, select_hints
 from core.solver import Rectangle, find_rectangles
 
 
@@ -50,6 +50,31 @@ class TestSelectHint:
         snapshot = list(candidates)
         select_hint(candidates)
         assert candidates == snapshot
+
+
+class TestSelectHints:
+    def test_empty_gives_empty_list(self):
+        assert select_hints([]) == []
+        assert select_hints([], limit=3) == []
+
+    def test_limit_truncates_by_area_order(self):
+        areas = [_rect(0, 0, 0, 5), _rect(0, 0, 0, 1), _rect(2, 2, 4, 4), _rect(0, 5, 0, 6)]
+        hints = select_hints(areas, limit=2)
+        assert [h.rectangle.area for h in hints] == [2, 2]
+        assert (hints[0].rectangle.row1, hints[0].rectangle.col1) == (0, 0)
+        assert (hints[1].rectangle.row1, hints[1].rectangle.col1) == (0, 5)
+        assert all(h.candidate_count == 4 for h in hints)
+
+    def test_limit_larger_than_candidates(self):
+        only = _rect(2, 3, 2, 4)
+        assert select_hints([only], limit=5) == [Hint(rectangle=only, candidate_count=1)]
+
+    def test_nonpositive_limit(self):
+        assert select_hints([_rect(0, 0, 0, 1)], limit=0) == []
+
+    def test_single_wrapper_matches_first(self):
+        candidates = [_rect(5, 5, 5, 6), _rect(0, 0, 0, 1)]
+        assert select_hint(candidates) == select_hints(candidates, limit=5)[0]
 
 
 class TestSelectorWithSolver:

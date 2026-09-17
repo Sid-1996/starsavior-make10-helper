@@ -99,3 +99,13 @@ class TestSettingsV2:
         assert store.load_always_on_top() is False
         store.save_always_on_top(True)
         assert store.load_always_on_top() is True
+
+    def test_max_hints_default_and_clamp(self, tmp_path):
+        store = SettingsStore(tmp_path / "settings.json")
+        assert store.load_max_hints() == 5
+        store.save_max_hints(3)
+        assert store.load_max_hints() == 3
+        store.save_max_hints(99)
+        assert store.load_max_hints() == 10
+        store.save_max_hints(0)
+        assert store.load_max_hints() == 1

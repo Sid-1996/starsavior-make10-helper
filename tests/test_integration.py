@@ -104,7 +104,7 @@ class TestFullPipeline:
         assert monitor.note_frame(frame_a) is True
         snapshot = monitor.commit_board(_recognize(frame_a))
         assert snapshot.changed is True
-        assert (snapshot.hint.rectangle.row1, snapshot.hint.rectangle.col1) == (0, 0)
+        assert (snapshot.hints[0].rectangle.row1, snapshot.hints[0].rectangle.col1) == (0, 0)
         monitor.rebaseline(frame_a)
 
         for _ in range(2):
@@ -112,6 +112,6 @@ class TestFullPipeline:
         assert monitor.note_frame(frame_b) is True
         snapshot = monitor.commit_board(_recognize(frame_b))
         assert snapshot.changed is True
-        assert (snapshot.hint.rectangle.row1, snapshot.hint.rectangle.col1) == (9, 13)
+        assert (snapshot.hints[0].rectangle.row1, snapshot.hints[0].rectangle.col1) == (9, 13)
         monitor.rebaseline(frame_b)
         assert monitor.note_frame(frame_b) is False

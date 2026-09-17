@@ -80,10 +80,21 @@ class TestHintOverlayWindow:
         overlay = HintOverlay(desktop=(0, 0, 300, 200))
         overlay.show_hint(Rectangle(0, 0, 0, 1, 10, 2, 0, 2), _grid())
         assert overlay.isVisibleTo(None) or overlay.isVisible()
-        assert overlay.current_shapes is not None
+        assert len(overlay.current_shapes) == 1
         overlay.hide_hint()
         assert not overlay.isVisible()
-        assert overlay.current_shapes is None
+        assert overlay.current_shapes == []
+        overlay.close()
+
+    def test_show_multiple_secondary_last(self, qapp):
+        overlay = HintOverlay(desktop=(0, 0, 300, 200))
+        overlay.show_hints(
+            [Rectangle(0, 0, 0, 1, 10, 2, 0, 2), Rectangle(0, 5, 0, 6, 10, 2, 0, 2)],
+            _grid(),
+        )
+        assert len(overlay.current_shapes) == 2
+        assert overlay.current_shapes[0].start == (5, 5)
+        assert overlay.current_shapes[1].start == (55, 5)
         overlay.close()
 
 
@@ -123,12 +134,12 @@ class TestMainWindowWiring:
 
     def test_show_board_hint_displays_and_hides(self, qapp, tmp_path):
         win = self._window_with_roi(qapp, tmp_path)
-        hint = win._show_board_hint(self._pair_board())
-        assert hint is not None
-        assert (hint.rectangle.row1, hint.rectangle.col1) == (0, 0)
+        hints = win._show_board_hints(self._pair_board())
+        assert len(hints) >= 1
+        assert (hints[0].rectangle.row1, hints[0].rectangle.col1) == (0, 0)
         assert win._overlay.isVisible()
         # 每格 30x30：第一格中心 (15,15)
-        assert win._overlay.current_shapes.start == (15, 15)
+        assert win._overlay.current_shapes[0].start == (15, 15)
         win.btn_hide_hint.click()
         assert not win._overlay.isVisible()
         win.close()
@@ -137,8 +148,23 @@ class TestMainWindowWiring:
         from core.board_state import BoardState
 
         win = self._window_with_roi(qapp, tmp_path)
-        assert win._show_board_hint(BoardState.all_unknown()) is None
+        assert win._show_board_hints(BoardState.all_unknown()) == []
         assert not win._overlay.isVisible()
+        win.close()
+
+    def test_hints_count_pref(self, qapp, tmp_path):
+        from core.settings_store import SettingsStore
+        from gui.main_window import MainWindow
+
+        win = MainWindow(
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
+        )
+        assert win.spin_hints.value() == 5
+        win.spin_hints.setValue(3)
+        assert SettingsStore(tmp_path / "settings.json").load_max_hints() == 3
         win.close()
 
     def test_paint_hint_draws_to_image(self, qapp):
@@ -178,6 +204,20 @@ class TestOverlayPresent:
         from gui.hint_overlay import overlay_present
 
         shapes, image = self._painted()
+        roi = Roi(x=0, y=0, width=150, height=100)
+        assert overlay_present(image, shapes, roi, (0, 0)) is True
+
+    def test_detects_secondary_amber(self, qapp):
+        from PyQt6.QtGui import QPainter
+
+        from gui.hint_overlay import overlay_present, paint_hint
+
+        shapes, _ = self._painted()
+        image = QImage(150, 100, QImage.Format.Format_RGB888)
+        image.fill(QColor(128, 128, 128))
+        painter = QPainter(image)
+        paint_hint(painter, shapes.border, shapes.start, shapes.end, primary=False)
+        painter.end()
         roi = Roi(x=0, y=0, width=150, height=100)
         assert overlay_present(image, shapes, roi, (0, 0)) is True
 

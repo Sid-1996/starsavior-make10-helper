@@ -110,19 +110,18 @@ class TestBoardMonitor:
         snapshot = monitor.commit_board(make_board({(0, 0): 4, (0, 1): 6}))
         assert snapshot.rebuilt is True
         assert snapshot.changed is True
-        assert snapshot.hint is not None
-        assert snapshot.hint.rectangle.area == 2
+        assert snapshot.hints and snapshot.hints[0].rectangle.area == 2
 
     def test_hint_lock_keeps_same_object(self):
         monitor = BoardMonitor(_config())
         first = monitor.commit_board(make_board({(0, 0): 4, (0, 1): 6}))
-        # confidence 不同但語意相同 → 不算變化，Hint 物件保持同一
+        # confidence 不同但語意相同 → 不算變化，Hint 列保持同一
         twin = make_board({(0, 0): 4, (0, 1): 6})
         twin.cells[0].confidence = 0.99
         second = monitor.commit_board(twin)
         assert second.rebuilt is False
         assert second.changed is False
-        assert second.hint is first.hint
+        assert second.hints is first.hints
 
     def test_unknown_keeps_old_hint(self):
         monitor = BoardMonitor(_config())
@@ -130,8 +129,8 @@ class TestBoardMonitor:
         snapshot = monitor.commit_board(make_board({(0, 0): 4}, unknowns={(0, 1), (5, 5)}))
         assert snapshot.rebuilt is False
         assert snapshot.changed is False
-        assert snapshot.hint is monitor.hint
-        assert (snapshot.hint.rectangle.row1, snapshot.hint.rectangle.col1) == (0, 0)
+        assert snapshot.hints is monitor.hints
+        assert (snapshot.hints[0].rectangle.row1, snapshot.hints[0].rectangle.col1) == (0, 0)
 
     def test_real_change_updates_hint(self):
         monitor = BoardMonitor(_config())
@@ -140,14 +139,19 @@ class TestBoardMonitor:
         snapshot = monitor.commit_board(make_board({(7, 7): 9, (7, 8): 1}))
         assert snapshot.rebuilt is True
         assert snapshot.changed is True
-        assert (snapshot.hint.rectangle.row1, snapshot.hint.rectangle.col1) == (7, 7)
+        assert (snapshot.hints[0].rectangle.row1, snapshot.hints[0].rectangle.col1) == (7, 7)
 
     def test_no_candidate_clears_hint(self):
         monitor = BoardMonitor(_config())
         monitor.commit_board(make_board({(0, 0): 4, (0, 1): 6}))
         snapshot = monitor.commit_board(make_board({(0, 0): 5}))
         assert snapshot.changed is True
-        assert snapshot.hint is None
+        assert snapshot.hints == []
+
+    def test_commit_respects_max_hints(self):
+        monitor = BoardMonitor(_config())
+        snapshot = monitor.commit_board(make_board({(0, 0): 4, (0, 1): 6}), max_hints=1)
+        assert len(snapshot.hints) == 1
 
     def test_full_flow_stable_commit_rebaseline_quiet(self):
         monitor = BoardMonitor(_config())

@@ -130,7 +130,7 @@ class TestMonitorTicks:
         assert win._monitor is not None
         assert win._monitor.board is not None
         assert len(win._monitor.board.cells) == 150
-        assert win._monitor.hint is None  # 全 EMPTY：無候選
+        assert win._monitor.hints == []  # 全 EMPTY：無候選
         assert "停止" not in win.lbl_monitor.text()
         # 之後相同幀不再重建（Hint Lock：board 物件保持同一）
         board_before = win._monitor.board
@@ -149,10 +149,10 @@ class TestMonitorTicks:
         win.btn_start.click()
         for _ in range(6):
             win._on_monitor_tick()
-        # 亮度整體改變但語意同為全 EMPTY → hint 維持 None，不報變化
+        # 亮度整體改變但語意同為全 EMPTY → hint 維持空，不報變化
         assert win._monitor is not None
         assert win._monitor.board is not None
-        assert win._monitor.hint is None
+        assert win._monitor.hints == []
         win.close()
 
 
@@ -170,7 +170,7 @@ class TestCleanCaptureRetry:
                     cells.append(Cell(row, column, CellState.DIGIT, digit=6))
                 else:
                     cells.append(Cell(row, column, CellState.EMPTY))
-        win._show_board_hint(BoardState(cells=cells))
+        win._show_board_hints(BoardState(cells=cells))
         return win
 
     def _polluted(self, shapes):
@@ -188,9 +188,9 @@ class TestCleanCaptureRetry:
         win = self._pair_window(qapp, tmp_path)
         win.btn_start.click()
         shapes = win._overlay.current_shapes
-        assert shapes is not None
+        assert len(shapes) >= 1
         calls: list = []
-        sequence = [self._polluted(shapes), self._polluted(shapes), _solid(150, 100, 60)]
+        sequence = [self._polluted(shapes[0]), self._polluted(shapes[0]), _solid(150, 100, 60)]
 
         def fake_capture(roi):
             calls.append(roi)
@@ -209,8 +209,8 @@ class TestCleanCaptureRetry:
         win = self._pair_window(qapp, tmp_path)
         win.btn_start.click()
         shapes = win._overlay.current_shapes
-        assert shapes is not None
-        polluted = self._polluted(shapes)
+        assert len(shapes) >= 1
+        polluted = self._polluted(shapes[0])
         monkeypatch.setattr(core.screen_capture, "capture_roi", lambda roi: polluted)
         assert win._capture_clean(shapes) is None
         log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
@@ -227,7 +227,7 @@ class TestCleanCaptureRetry:
             return _solid(150, 100, 60)
 
         monkeypatch.setattr(core.screen_capture, "capture_roi", fake_capture)
-        win._capture_clean(None)
+        win._capture_clean([])
         assert len(calls) == 1
         win.close()
 
@@ -277,18 +277,18 @@ class TestFullSimulation:
 
         for _ in range(3):
             win._on_monitor_tick()
-        hint_a = win._monitor.hint
-        assert hint_a is not None
-        assert (hint_a.rectangle.row1, hint_a.rectangle.col1) == (0, 0)
+        hints_a = win._monitor.hints
+        assert len(hints_a) >= 1
+        assert (hints_a[0].rectangle.row1, hints_a[0].rectangle.col1) == (0, 0)
         assert win._overlay.isVisible()
 
         for _ in range(3):
             win._on_monitor_tick()
-        hint_b = win._monitor.hint
-        assert hint_b is not None
-        assert (hint_b.rectangle.row1, hint_b.rectangle.col1) == (9, 13)
-        assert win._overlay.current_shapes.start == (13 * 62 + 31, 9 * 62 + 31)
+        hints_b = win._monitor.hints
+        assert len(hints_b) >= 1
+        assert (hints_b[0].rectangle.row1, hints_b[0].rectangle.col1) == (9, 13)
+        assert win._overlay.current_shapes[0].start == (13 * 62 + 31, 9 * 62 + 31)
 
-        win._on_monitor_tick()  # 之後同盤安靜：Hint 物件保持同一
-        assert win._monitor.hint is hint_b
+        win._on_monitor_tick()  # 之後同盤安靜：Hint 列保持同一
+        assert win._monitor.hints is hints_b
         win.close()
