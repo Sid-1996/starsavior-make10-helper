@@ -48,6 +48,24 @@ def _window(tmp_path):
     return win
 
 
+def _compose_board(plant: dict[tuple[int, int], int]) -> "QImage":
+    """用真實模板拼 930x620 ROI 圖（每格 62x62），回傳彩色 QImage。"""
+    import cv2
+    import numpy as np
+
+    from core.templates import TemplateStore
+
+    templates = TemplateStore().load_all()
+    assert templates.is_complete()
+    gray = np.full((620, 930), 128, dtype=np.uint8)
+    for (row, column), digit in plant.items():
+        tile = cv2.resize(templates.templates[digit], (62, 62), interpolation=cv2.INTER_AREA)
+        gray[row * 62 : (row + 1) * 62, column * 62 : (column + 1) * 62] = tile
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    height, width, _ = rgb.shape
+    return QImage(rgb.data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
+
+
 class TestMonitorButtons:
     def test_start_stop_lifecycle(self, qapp, tmp_path):
         win = _window(tmp_path)
@@ -178,4 +196,38 @@ class TestCleanCaptureRetry:
         assert "監控中 #1" in win.lbl_monitor.text()
         log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
         assert "start roi=" in log_text
+        win.close()
+
+
+class TestFullSimulation:
+    def test_board_change_switches_hint(self, qapp, tmp_path, fast_settle, monkeypatch):
+        """全真模擬：A 盤穩定出提示 → 換 B 盤 → 提示必須跟著換（回歸：卡在第一次）。"""
+        from gui.main_window import MainWindow
+
+        board_a = _compose_board({(0, 0): 4, (0, 1): 6})
+        board_b = _compose_board({(9, 13): 5, (9, 14): 5})
+        # _apply_roi 的預覽先吃掉 1 張；每次穩定觸發吃 3 張（tick+乾淨+基準）
+        frames = [board_a] * 6 + [board_b] * 6
+        monkeypatch.setattr(core.screen_capture, "capture_roi", lambda roi: frames.pop(0))
+
+        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+        win._apply_roi(Roi(x=0, y=0, width=930, height=620))
+        win.btn_start.click()
+
+        for _ in range(3):
+            win._on_monitor_tick()
+        hint_a = win._monitor.hint
+        assert hint_a is not None
+        assert (hint_a.rectangle.row1, hint_a.rectangle.col1) == (0, 0)
+        assert win._overlay.isVisible()
+
+        for _ in range(3):
+            win._on_monitor_tick()
+        hint_b = win._monitor.hint
+        assert hint_b is not None
+        assert (hint_b.rectangle.row1, hint_b.rectangle.col1) == (9, 13)
+        assert win._overlay.current_shapes.start == (13 * 62 + 31, 9 * 62 + 31)
+
+        win._on_monitor_tick()  # 之後同盤安靜：Hint 物件保持同一
+        assert win._monitor.hint is hint_b
         win.close()
