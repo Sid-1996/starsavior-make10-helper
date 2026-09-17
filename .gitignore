@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# 專案設定（含使用者 ROI，屬本機資料）
+settings.json
+
+# 打包輸出
+dist/
+build/
+
+# 本機除錯產物（螢幕截圖、對齊過程圖，約數十 MB，不進版本控制）
+debug/
