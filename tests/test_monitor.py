@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 
 from core.board_state import BoardState, Cell, CellState
-from core.monitor import BoardMonitor, MonitorConfig, StabilityTracker, board_key, mean_abs_diff
+from core.monitor import (
+    BoardMonitor,
+    MonitorConfig,
+    StabilityTracker,
+    board_key,
+    changed_pixel_ratio,
+)
 
 
 def _frame(mark: tuple[int, int] | None = None) -> np.ndarray:
@@ -16,7 +22,7 @@ def _frame(mark: tuple[int, int] | None = None) -> np.ndarray:
 
 
 def _config() -> MonitorConfig:
-    return MonitorConfig(diff_threshold=5.0, stable_required=3)
+    return MonitorConfig(diff_threshold=0.002, stable_required=3)
 
 
 def make_board(
@@ -41,10 +47,15 @@ def make_board(
 
 class TestMeanAbsDiff:
     def test_identical_is_zero(self):
-        assert mean_abs_diff(_frame(), _frame()) == 0.0
+        assert changed_pixel_ratio(_frame(), _frame()) == 0.0
 
-    def test_shape_mismatch_is_infinite(self):
-        assert mean_abs_diff(_frame(), np.zeros((5, 5), dtype=np.uint8)) == float("inf")
+    def test_shape_mismatch_is_full_change(self):
+        assert changed_pixel_ratio(_frame(), np.zeros((5, 5), dtype=np.uint8)) == 1.0
+
+    def test_single_cell_change_detected(self):
+        # 只動 1 格（24/600 像素）也必須超過預設門檻，否則小消除抓不到
+        ratio = changed_pixel_ratio(_frame(), _frame((0, 0)))
+        assert ratio > MonitorConfig.diff_threshold
 
     def test_rejects_non_grayscale(self):
         tracker = StabilityTracker(_config())

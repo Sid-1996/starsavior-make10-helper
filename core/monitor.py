@@ -29,17 +29,22 @@ class MonitorConfig:
     """監控參數（呼叫端可調整；預設值針對 300ms 幀間隔調校）。"""
 
     frame_interval_ms: int = 300
-    diff_threshold: float = 5.0  # 平均絕對亮度差（0~255）超過此值視為畫面變化
+    # 有明顯變化的像素比例（|亮度差| > 12 的像素占比）超過此值視為畫面變化。
+    # 用比例而非全圖平均：消除 1~2 格只佔全 ROI 約 1%，平均值會被稀釋到看不見。
+    diff_threshold: float = 0.002
     stable_required: int = 3  # 連續幾幀無明顯變化才算穩定（動畫等待）
     settle_delay_sec: float = 0.15  # 乾淨重辨識前，隱藏 Overlay 後的等待秒數
 
 
-def mean_abs_diff(first: np.ndarray, second: np.ndarray) -> float:
-    """兩幀的平均絕對亮度差；形狀不同視為無限大（ROI 變更，呼叫端應重建）。"""
+PIXEL_DIFF_THRESHOLD = 12
+
+
+def changed_pixel_ratio(first: np.ndarray, second: np.ndarray) -> float:
+    """兩幀差異超過亮度門檻的像素比例（0~1）；形狀不同視為 1（ROI 變更）。"""
     if first.shape != second.shape:
-        return float("inf")
+        return 1.0
     delta = first.astype(np.int16) - second.astype(np.int16)
-    return float(np.mean(np.abs(delta)))
+    return float(np.mean(np.abs(delta) > PIXEL_DIFF_THRESHOLD))
 
 
 def board_key(board: BoardState) -> tuple[tuple[str, int | None], ...]:
@@ -63,7 +68,7 @@ class StabilityTracker:
             raise ValueError("frame 必須是 2D uint8 灰階影像")
         if (
             self._previous is None
-            or mean_abs_diff(frame, self._previous) > self._config.diff_threshold
+            or changed_pixel_ratio(frame, self._previous) > self._config.diff_threshold
         ):
             self._run = 1
             self._emitted = False
@@ -74,7 +79,7 @@ class StabilityTracker:
             self._emitted = True
             if (
                 self._baseline is None
-                or mean_abs_diff(frame, self._baseline) > self._config.diff_threshold
+                or changed_pixel_ratio(frame, self._baseline) > self._config.diff_threshold
             ):
                 self._baseline = frame.copy()
                 return True

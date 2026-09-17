@@ -46,6 +46,7 @@ from core.roi_model import GRID_COLS, GRID_ROWS, Roi
 from core.settings_store import SettingsStore
 from core.solver import find_rectangles
 from core.templates import TemplateStore
+from gui.global_hotkey import GlobalHotkey
 from gui.hint_overlay import HintOverlay
 from gui.image_utils import qimage_to_gray
 from gui.recognition_panel import RecognitionPanel
@@ -63,6 +64,8 @@ class MainWindow(QMainWindow):
         self._roi: Roi | None = self._store.load_roi()
         self._templates = TemplateStore().load_all()
         self._overlay = HintOverlay()
+        self._overlay_muted = False  # F8 隱藏後，監控迴圈不再自動顯示
+        self._hotkey = GlobalHotkey(self._on_hotkey_toggle)
         self._monitor: BoardMonitor | None = None
         self._monitor_timer = QTimer(self)
         self._monitor_timer.setInterval(MonitorConfig.frame_interval_ms)
@@ -70,6 +73,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._sync_spinboxes()
         self._update_status()
+        if not self._hotkey.start():
+            self.btn_hide_hint.setToolTip(
+                "隱藏 Overlay 提示（F8 全域快捷鍵註冊失敗，只能用此按鈕）。"
+            )
 
     # ------------------------------------------------------------------ #
     # UI 建構
@@ -104,7 +111,9 @@ class MainWindow(QMainWindow):
         self.btn_align = QPushButton("自動校正")
         self.btn_test = QPushButton("測試辨識")
         self.btn_hide_hint = QPushButton("隱藏提示")
-        self.btn_hide_hint.setToolTip("隱藏 Overlay 提示（Overlay 本身不接收滑鼠，只能在這裡關）。")
+        self.btn_hide_hint.setToolTip(
+            "隱藏 Overlay 提示（Overlay 本身不接收滑鼠，只能在這裡關；F8 也可切換）。"
+        )
         self.btn_start = QPushButton("開始監控")
         self.btn_stop = QPushButton("停止監控")
         self.btn_align.setToolTip(
@@ -317,8 +326,15 @@ class MainWindow(QMainWindow):
             "可用「隱藏提示」關閉。"
         )
 
+    def _on_hotkey_toggle(self) -> None:
+        """F8：有提示時切換 Overlay 顯示/隱藏（只控制顯示，不操作遊戲）。"""
+        state = self._overlay.toggle_display()
+        if state is not None:
+            self._overlay_muted = not state
+
     def _show_board_hint(self, board):
         """對無 UNKNOWN 的棋盤計算提示並顯示 Overlay；回傳 Hint（供測試直接呼叫）。"""
+        self._overlay_muted = False  # 使用者手動要求顯示，解除 F8 靜音
         hint: Hint | None = select_hint(find_rectangles(board))
         if hint is None or self._roi is None:
             return None
@@ -340,6 +356,7 @@ class MainWindow(QMainWindow):
     def _on_stop_monitor(self) -> None:
         self._monitor_timer.stop()
         self._monitor = None
+        self._overlay_muted = False
         self._overlay.hide_hint()
         self.lbl_monitor.setText("監控狀態：停止")
         self._update_status()
@@ -379,8 +396,9 @@ class MainWindow(QMainWindow):
         snapshot = self._monitor.commit_board(board)
         if snapshot.changed:
             self.recognition_panel.show_board(board, self._templates.missing())
-            if snapshot.hint is None:
-                self._overlay.hide_hint()
+            if snapshot.hint is None or self._overlay_muted:
+                if not self._overlay_muted:
+                    self._overlay.hide_hint()
             else:
                 assert self._roi is not None
                 self._overlay.show_hint(snapshot.hint.rectangle, build_grid(self._roi))
@@ -391,10 +409,16 @@ class MainWindow(QMainWindow):
 
     def _restore_overlay(self) -> None:
         """把隱藏前的提示顯示回來（乾淨擷取後的過渡，避免畫面閃爍太久）。"""
-        if self._monitor is not None and self._monitor.hint is not None and self._roi is not None:
+        if (
+            not self._overlay_muted
+            and self._monitor is not None
+            and self._monitor.hint is not None
+            and self._roi is not None
+        ):
             self._overlay.show_hint(self._monitor.hint.rectangle, build_grid(self._roi))
 
     def closeEvent(self, event) -> None:
+        self._hotkey.stop()
         self._on_stop_monitor()
         super().closeEvent(event)
 

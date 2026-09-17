@@ -10,7 +10,7 @@
 - [x] **Phase 4**：Hint Selector（最小 area + 固定掃描順序，只回一個 Hint）
 - [x] **Phase 5**：透明 Click-through Overlay（外框 + 起點 + 終點）
 - [x] **Phase 6**：畫面變化偵測（穩定等待 + Hint Lock + 穩定後重辨識）
-- [ ] Phase 7：整合測試與 UX 修正
+- [x] **Phase 7**：整合測試與 UX 修正（含 F8 全域快捷鍵）
 
 ## 環境需求
 
@@ -61,6 +61,16 @@ uv run python main.py
   才重辨識（消除動畫中間幀會被跳過）；棋盤真正變化才更新 Overlay
   （Hint Lock），否則保持原提示
 - 「**停止監控**」：停止迴圈並隱藏提示；變更 ROI 會自動先停止監控
+- `F8` 全域快捷鍵：隨時顯示 / 隱藏 Overlay（只控制顯示，不操作遊戲；
+  監控中按 F8 隱藏後，迴圈不再自動顯示，直到下次手動「測試辨識」）
+
+## Phase 7 說明
+
+- `tests/test_integration.py`：用 repo 內真實模板拼出合成棋盤，
+  端到端驗證 ROI 畫面 → 辨識 → Solver → Hint → Overlay 幾何，
+  以及跨棋盤變化的 monitor 全鏈
+- 變化偵測用「明顯變化像素比例」（非全圖平均），單格消除（約佔全 ROI 1%）
+  也能觸發；門檻見 `core/monitor.py::MonitorConfig`
 
 ## 測試
 
@@ -90,6 +100,7 @@ gui/
     roi_selector.py         # 全螢幕框選視窗（含自動對齊）
     recognition_panel.py    # 10×15 辨識結果矩陣顯示
     hint_overlay.py         # 透明 Click-through Overlay（外框 + 起/終點，不吃滑鼠）
+    global_hotkey.py        # F8 全域快捷鍵（Win32 RegisterHotKey，只切換顯示）
     image_utils.py          # QImage ↔ numpy 轉換
 templates/
     1.png ... 9.png         # 真實遊戲畫面擷取的數字模板（tools/build_templates.py 建立）
