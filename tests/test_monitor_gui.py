@@ -174,6 +174,18 @@ class TestCleanCaptureRetry:
         assert "overlay residue detected" in log_text
         win.close()
 
+    def test_exhausted_returns_none(self, qapp, tmp_path, fast_settle, monkeypatch):
+        win = self._pair_window(qapp, tmp_path)
+        win.btn_start.click()
+        shapes = win._overlay.current_shapes
+        assert shapes is not None
+        polluted = self._polluted(shapes)
+        monkeypatch.setattr(core.screen_capture, "capture_roi", lambda roi: polluted)
+        assert win._capture_clean(shapes) is None
+        log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
+        assert "skip rebuild" in log_text
+        win.close()
+
     def test_no_overlay_skips_check(self, qapp, tmp_path, fast_settle, monkeypatch):
         win = _window(tmp_path)
         win.btn_start.click()
@@ -196,6 +208,19 @@ class TestCleanCaptureRetry:
         assert "監控中 #1" in win.lbl_monitor.text()
         log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
         assert "start roi=" in log_text
+        win.close()
+
+    def test_rebuild_dumps_frames_and_board_summary(
+        self, qapp, tmp_path, fake_capture, fast_settle
+    ):
+        win = _window(tmp_path)
+        win.btn_start.click()
+        for _ in range(3):  # 穩定觸發重建（全 EMPTY 盤 → hint None）
+            win._on_monitor_tick()
+        assert (tmp_path / "last_stable.png").is_file()
+        assert (tmp_path / "last_clean.png").is_file()
+        log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
+        assert "board digit=0 empty=150 unknown=0" in log_text
         win.close()
 
 

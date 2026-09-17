@@ -399,11 +399,12 @@ class MainWindow(QMainWindow):
             f"監控狀態：監控中 #{self._monitor_ticks} 穩定{tracker_run}/{required}{note}"
         )
 
-    def _capture_clean(self, shapes) -> object:
+    def _capture_clean(self, shapes) -> object | None:
         """隱藏 Overlay 後擷取；殘留筆跡則重試（有上限，不無限等待）。
 
         shapes: 隱藏前的提示幾何（None 表示本來就沒顯示，無需驗證）。
-        回傳彩色 QImage（呼叫端再轉灰階）；擷取失敗直接丟例外。
+        回傳彩色 QImage（呼叫端再轉灰階）；重試用盡回傳 None（呼叫端放棄本次重建，
+        避免把污染幀餵給辨識器）；擷取失敗直接丟例外。
         """
         assert self._roi is not None
         assert self._monitor is not None
@@ -420,9 +421,38 @@ class MainWindow(QMainWindow):
             retries += 1
             self._monitor_log(f"overlay residue detected, retry {retries}")
             if retries > config.max_clean_retries:
-                self._monitor_log("clean retry exhausted, use last frame")
-                return image
+                self._monitor_log("clean retry exhausted, skip rebuild")
+                return None
             time.sleep(config.settle_delay_sec)
+
+    def _dump_frame(self, name: str, image) -> None:
+        """把關鍵幀存到日誌目錄（除錯用；失敗不影響監控）。"""
+        try:
+            from PyQt6.QtGui import QImage
+
+            path = str(self._log_dir / name)
+            if isinstance(image, QImage):
+                image.save(path)
+            else:
+                import cv2
+
+                cv2.imwrite(path, image)
+        except Exception:
+            pass
+
+    def _log_board_summary(self, board) -> None:
+        """記錄重辨識結果摘要：三態計數 + UNKNOWN 格位（最多 20 格）。"""
+        from core.board_state import CellState
+
+        counts = board.counts()
+        unknowns = [
+            (cell.row, cell.column) for cell in board.cells if cell.state == CellState.UNKNOWN
+        ][:20]
+        self._monitor_log(
+            f"board digit={counts[CellState.DIGIT]} "
+            f"empty={counts[CellState.EMPTY]} unknown={counts[CellState.UNKNOWN]} "
+            f"unknown_at={unknowns}"
+        )
 
     def _on_monitor_tick(self) -> None:
         if self._monitor is None or self._roi is None or not self._roi.is_valid():
@@ -443,6 +473,7 @@ class MainWindow(QMainWindow):
             return  # 無有效變化：保持目前 Hint（Hint Lock）
         ratio = self._monitor.tracker.last_ratio
         self._monitor_log(f"stable new frame tick={self._monitor_ticks} ratio={ratio:.4f}")
+        self._dump_frame("last_stable.png", frame)
         self._monitor_note = "重辨識中…"
         self._update_monitor_status()
         # 穩定新畫面 → 隱藏 Overlay 後稍候，乾淨重辨識（框線不可入鏡）
@@ -453,6 +484,16 @@ class MainWindow(QMainWindow):
         time.sleep(config.settle_delay_sec)
         try:
             color = self._capture_clean(shapes_before)
+            if color is None:  # 殘留消不掉：放棄本次重建，等下次變化
+                self._monitor_note = "維持提示（Overlay 未消失，跳過本次）"
+                self._update_monitor_status()
+                self._restore_overlay()
+                try:
+                    self._monitor.rebaseline(qimage_to_gray(screen_capture.capture_roi(self._roi)))
+                except Exception:
+                    pass
+                return
+            self._dump_frame("last_clean.png", color)
             board = build_board_state(
                 qimage_to_gray(color), self._roi, DigitRecognizer(self._templates)
             )
@@ -465,6 +506,7 @@ class MainWindow(QMainWindow):
             )
             return
         self._restore_overlay()
+        self._log_board_summary(board)
         snapshot = self._monitor.commit_board(board)
         if snapshot.changed:
             self.recognition_panel.show_board(board, self._templates.missing())

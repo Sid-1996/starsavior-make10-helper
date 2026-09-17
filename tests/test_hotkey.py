@@ -25,7 +25,8 @@ def qapp():
 class TestGlobalHotkey:
     def test_start_stop_lifecycle(self, qapp):
         calls: list = []
-        hotkey = GlobalHotkey(lambda: calls.append("hit"), hotkey_id=0x5B01)
+        # 用 F9 + 獨立 id：隔離其他測試建立的 MainWindow 遺留的 F8 註冊
+        hotkey = GlobalHotkey(lambda: calls.append("hit"), hotkey_id=0x5B01, virtual_key=0x78)
         if sys.platform != "win32":
             assert hotkey.start() is False
             return
