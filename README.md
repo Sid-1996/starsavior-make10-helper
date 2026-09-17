@@ -16,6 +16,8 @@
 到 [**Releases](../../releases)** 下載 `StarSaviorHelper.exe`，雙擊即用：
 免安裝、設定檔（`settings.json`）和日誌都留在 exe 旁邊，刪掉 exe 即乾淨移除。
 
+> 需要 **Windows 10 1803 以上 64-bit**（後台抓圖用；更舊的系統會自動退回前景模式，遊戲需保持可見）。
+
 ## 操作示意
 
 **開局**：滿盤時一次顯示前 N 組彩色編號提示，1 號綠框照著打：
@@ -47,22 +49,6 @@
 - [x] **Phase 5**：透明 Click-through Overlay（外框 + 起點 + 終點）
 - [x] **Phase 6**：畫面變化偵測（穩定等待 + Hint Lock + 穩定後重辨識）
 - [x] **Phase 7**：整合測試與 UX 修正（含 F8 全域快捷鍵）
-
-## 環境需求
-
-- Python 3.13
-- [uv](https://docs.astral.sh/uv/)
-
-## 安裝與執行
-
-**快速啟動：直接雙擊 `run.bat`**（首次執行會自動安裝依賴；錯誤時視窗會暫停顯示訊息）
-
-或使用命令列：
-
-```powershell
-uv sync
-uv run python main.py
-```
 
 ## 使用方式（目標：打開就緒，按 F8 開工）
 
@@ -131,6 +117,30 @@ uv run python main.py
 - 變化偵測用「明顯變化像素比例」（非全圖平均），單格消除（約佔全 ROI 1%）
   也能觸發；門檻見 `core/monitor.py::MonitorConfig`
 
+## 常見問題
+
+- **顯示「找不到遊戲視窗」**：先開遊戲再按開始監控；確認遊戲視窗標題是 `StarSavior` 且未最小化。
+- **按了開始監控但提示不更新**：看狀態列——「等待遊戲視窗」表示最小化了；「維持提示（棋盤未變）」表示畫面真的沒變；卡住先看 `debug/monitor.log`。
+- **很多格顯示問號（UNKNOWN）**：通常是遊戲特效／動畫遮住數字，等畫面靜止會自動重辨識；若長期如此，可能是遊戲改版換了字體。
+- **框選框不準**：框選放開後會自動對齊，失敗會用原始範圍；到「設定…」按「自動校正」，或直接重框。
+- **F8 沒反應**：可能被其他軟體佔用；直接按主視窗的開關鈕效果一樣。
+
+## Roadmap
+
+大功能已完工；後續以修 bug 和小體驗優化為主。歡迎開 Issue（附上 `debug/monitor.log` 會更快釐清）。
+
+## 開發者執行
+
+- Python 3.13＋[uv](https://docs.astral.sh/uv/)
+- **開發測試：直接雙擊 `run.bat`**（首次執行會自動安裝依賴；錯誤時視窗會暫停顯示訊息）
+
+或使用命令列：
+
+```powershell
+uv sync
+uv run python main.py
+```
+
 ## 測試
 
 ```powershell
@@ -166,6 +176,8 @@ core/
     solver.py               # Rectangle Solver：純演算法，BoardState → 全部合法矩形
     hint_selector.py        # Hint Selector：最小 area + 固定順序＋同組去重，選前 N 個
     monitor.py              # 畫面穩定追蹤 + Hint Lock（不碰 GUI/擷取）
+    paths.py                # frozen 路徑相容（資源走解包暫存，可寫走 exe 旁）
+    i18n.py                 # UI 字串 zh/en/ja/ko＋系統語言偵測
 gui/
     main_window.py          # 主視窗（一行狀態＋監控開關＋提示數＋首次引導；邏輯仍住這裡）
     settings_dialog.py      # 設定對話框（ROI 框選/微調/預覽、辨識矩陣、置頂）
@@ -187,3 +199,7 @@ tests/                      # pytest 單元測試（含 solver vs 暴力參考�
 ### 座標系統
 
 管線全程使用**實體螢幕像素**：`main.py` 設定 Per-Monitor DPI awareness 並關閉 Qt High-DPI 縮放（`QT_ENABLE_HIGHDPI_SCALING=0`），確保 Qt 座標與擷取座標一致，後續 Overlay 也沿用同一座標系。設定檔存的是**視窗相對比例**（`roi_frac`），啟動／每 tick 以當下遊戲客戶區換算成絕對座標，因此搬窗／換解析度免重框。
+
+## 免責聲明
+
+本工具只讀取遊戲畫面並顯示提示，不修改遊戲、不送出任何滑鼠／鍵盤操作。請遵守遊戲的服務條款，使用風險自負（MIT License，不負任何擔保責任）。

@@ -16,6 +16,8 @@ A visual assistant for the "make-10" number-matching game. **It only analyzes th
 Download `StarSaviorHelper.exe` from [**Releases**](../../releases) and double-click to run:
 no installation; `settings.json` and logs stay next to the exe — delete the exe for a clean removal.
 
+> Requires **Windows 10 1803+ 64-bit** (for background capture; older systems fall back to foreground mode — keep the game visible).
+
 ## Screenshots
 
 **Early game**: a full board shows the top-N colored numbered hints at once — follow green No.1:
@@ -48,22 +50,6 @@ no installation; `settings.json` and logs stay next to the exe — delete the ex
 - [x] **Phase 5**: transparent click-through Overlay (border + start/end points + number badges)
 - [x] **Phase 6**: frame-change detection (stability wait + Hint Lock + re-recognize when stable)
 - [x] **Phase 7**: integration tests and UX fixes (incl. F8 global hotkey)
-
-## Requirements
-
-- Python 3.13
-- [uv](https://docs.astral.sh/uv/)
-
-## Install & Run
-
-**Quick start: double-click `run.bat`** (installs dependencies on first run; pauses with the error message on failure)
-
-Or from the command line:
-
-```powershell
-uv sync
-uv run python main.py
-```
 
 ## Usage (goal: ready on launch, press F8 to work)
 
@@ -132,6 +118,30 @@ minimized game shows "waiting for game window", closing the game stops automatic
 - Change detection uses the "changed-pixel ratio" (not whole-frame average), so a 1~2-cell clear
   (~1% of ROI) still triggers; thresholds: `core/monitor.py::MonitorConfig`
 
+## FAQ
+
+- **"Cannot find the game window"**: open the game first, then start monitoring; make sure the game window is titled `StarSavior` and not minimized.
+- **Hints don't update after starting**: read the status line — "waiting for game window" means it's minimized; "keeping hints (board unchanged)" means the frame really didn't change; when stuck, check `debug/monitor.log` first.
+- **Many "?" (UNKNOWN) cells**: usually game effects/animations covering digits — it re-recognizes once the frame settles; if it persists, the game may have changed fonts.
+- **Selection box is off**: release auto-aligns, falling back to the raw box on failure; hit "Auto Align" in Settings or just reselect.
+- **F8 does nothing**: another app may have grabbed it; the main-window toggle button works the same.
+
+## Roadmap
+
+Major features are done; going forward it's bug fixes and small UX polish. Issues welcome (attach `debug/monitor.log` for faster triage).
+
+## For developers
+
+- Python 3.13 + [uv](https://docs.astral.sh/uv/)
+- **Dev test run: double-click `run.bat`** (installs dependencies on first run; pauses with the error message on failure)
+
+Or from the command line:
+
+```powershell
+uv sync
+uv run python main.py
+```
+
 ## Tests
 
 ```powershell
@@ -167,6 +177,7 @@ core/
     solver.py               # Rectangle Solver: pure algorithm, BoardState → all legal rectangles
     hint_selector.py        # Hint Selector: min area + fixed order + same-digits dedupe, top N
     monitor.py              # frame-stability tracking + Hint Lock (no GUI/capture)
+    paths.py                # frozen path compat (resources from bundle tmp, writable next to exe)
     i18n.py                 # UI strings zh/en/ja/ko + system-language detection
 gui/
     main_window.py          # main window (one status line + monitor toggle + hint count + first-run guide)
@@ -189,3 +200,7 @@ tests/                      # pytest unit tests (incl. solver vs brute-force ref
 ### Coordinate system
 
 The whole pipeline uses **physical screen pixels**: `main.py` sets Per-Monitor DPI awareness and disables Qt High-DPI scaling (`QT_ENABLE_HIGHDPI_SCALING=0`) so Qt coordinates match capture coordinates, and the Overlay uses the same system. Settings store a **window-relative ratio** (`roi_frac`), converted to absolute coordinates from the live game client area at startup and every tick — moving the window or changing resolution needs no reselect.
+
+## Disclaimer
+
+This tool only reads the game screen and shows hints; it never modifies the game nor sends any mouse/keyboard input. Respect the game's Terms of Service; use at your own risk (MIT License, no warranty).

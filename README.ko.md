@@ -16,6 +16,8 @@
 [**Releases**](../../releases)에서 `StarSaviorHelper.exe`를 받아 더블클릭으로 실행:
 설치 불필요. `settings.json`과 로그는 exe 옆에 남으므로, exe를 지우면 깨끗이 제거됩니다.
 
+> **Windows 10 1803 이상 64-bit** 필요(백그라운드 캡처용. 구 환경에서는 자동으로 포그라운드로 대체되므로 게임을 보이는 상태로 유지).
+
 ## 동작 화면
 
 **초반**: 가득 찬 보드에 상위 N개 컬러＋번호 힌트를 한 번에 표시. 초록 1번을 따라 하세요:
@@ -48,22 +50,6 @@
 - [x] **Phase 5**: 투명 클릭스루 Overlay(테두리＋시작/종료점＋번호 배지)
 - [x] **Phase 6**: 화면 변화 감지(안정 대기＋Hint Lock＋안정 후 재인식)
 - [x] **Phase 7**: 통합 테스트와 UX 수정(F8 전역 단축키 포함)
-
-## 환경 요구 사항
-
-- Python 3.13
-- [uv](https://docs.astral.sh/uv/)
-
-## 설치 및 실행
-
-**빠른 시작: `run.bat` 더블클릭**(최초 실행 시 의존성 자동 설치. 실패 시 메시지 표시 후 일시 정지)
-
-명령줄 사용:
-
-```powershell
-uv sync
-uv run python main.py
-```
 
 ## 사용법(목표: 열면 준비, F8로 시작)
 
@@ -132,6 +118,30 @@ uv run python main.py
 - 변화 감지는 "변화 픽셀 비율"(전체 화면 평균 아님)을 쓰므로 1~2칸 제거
   (전체 ROI의 약 1%)에도 발화. 임계값은 `core/monitor.py::MonitorConfig`
 
+## 자주 묻는 질문
+
+- **"게임 창을 찾을 수 없음" 표시**: 게임을 먼저 실행한 뒤 시작. 창 제목이 `StarSavior`인지, 최소화되지 않았는지 확인.
+- **시작해도 힌트가 업데이트되지 않음**: 상태 줄 확인. "게임 창 대기"는 최소화된 상태. "힌트 유지(보드 변경 없음)"는 실제로 변화가 없음. 막히면 먼저 `debug/monitor.log` 확인.
+- **"?"(UNKNOWN)가 많음**: 대부분 이펙트/애니메이션이 숫자를 가려서. 정지하면 자동 재인식. 계속되면 폰트 변경 가능성.
+- **선택 박스가 어긋남**: 놓으면 자동 조정, 실패 시 원래 선택 사용. "설정…"의 "자동 조정" 또는 다시 선택으로 해결.
+- **F8이 안 먹음**: 다른 앱이 가로챘을 가능성. 메인 창 스위치로도 같은 조작 가능.
+
+## Roadmap
+
+대기능은 완성됨. 향후 버그 수정과 소규모 UX 개선 중심. Issue 환영(`debug/monitor.log` 첨부 시 원인 파악이 빠름).
+
+## 개발자용
+
+- Python 3.13＋[uv](https://docs.astral.sh/uv/)
+- **개발 테스트 실행: `run.bat` 더블클릭**(최초 실행 시 의존성 자동 설치. 실패 시 메시지 표시 후 일시 정지)
+
+명령줄 사용:
+
+```powershell
+uv sync
+uv run python main.py
+```
+
 ## 테스트
 
 ```powershell
@@ -167,6 +177,7 @@ core/
     solver.py               # Rectangle Solver: 순수 알고리즘, BoardState → 전체 유효 사각형
     hint_selector.py        # Hint Selector: 최소 area＋고정 순서＋같은 숫자 그룹 중복 제거, 상위 N개
     monitor.py              # 프레임 안정 추적＋Hint Lock(GUI／캡처에 간섭 없음)
+    paths.py                # frozen 경로 호환(리소스는 번들 tmp, 쓰기는 exe 옆)
     i18n.py                 # UI 문자열 zh／en／ja／ko＋시스템 언어 감지
 gui/
     main_window.py          # 메인 창(상태 한 줄＋모니터링 스위치＋힌트 수＋최초 가이드)
@@ -189,3 +200,7 @@ tests/                      # pytest 단위 테스트(solver와 brute-force 참�
 ### 좌표계
 
 파이프라인 전체에서 **물리 스크린 픽셀** 사용: `main.py`에서 Per-Monitor DPI awareness를 설정하고 Qt High-DPI 스케일링을 비활성화(`QT_ENABLE_HIGHDPI_SCALING=0`)하므로 Qt 좌표와 캡처 좌표가 일치하고 Overlay도 같은 좌표계. 설정 파일에는 **창 상대 비율**(`roi_frac`)을 저장하고 시작 시와 매 tick에 live 게임 클라이언트 영역에서 절대 좌표로 환산하므로 창 이동/해상도 변경에도 재선택 불필요.
+
+## 면책 사항
+
+본 도구는 게임 화면 읽기와 힌트 표시만 하며, 게임 변조나 마우스/키보드 입력 전송은 일절 하지 않습니다. 게임 이용약관을 준수하고 본인 책임 하에 사용하세요(MIT License, 무보증).
