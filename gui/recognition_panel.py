@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QGroupBox, QLabel, QVBoxLayout, QWidget
 
 from core.board_state import BoardState, CellState
+from core.i18n import t
 
 _DIGIT_STYLE = "font-family: Consolas, monospace; font-size: 13px;"
 _UNKNOWN_STYLE = "font-family: Consolas, monospace; font-size: 13px; color: #e0a030;"
@@ -25,20 +26,32 @@ class RecognitionPanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._matrix_label = QLabel("尚未辨識")
+        self._matrix_label = QLabel(t("panel.initial"))
         self._matrix_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._matrix_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._matrix_label.setStyleSheet(_DIGIT_STYLE)
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
+        self._last_board: BoardState | None = None
+        self._last_missing: list[int] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._matrix_label)
         layout.addWidget(self._status_label)
 
+    def retranslate(self) -> None:
+        """語言切換時用最後的資料重繪（無資料回到初始文字）。"""
+        if self._last_board is not None:
+            self.show_board(self._last_board, self._last_missing)
+        else:
+            self._matrix_label.setText(t("panel.initial"))
+            self._status_label.setText("")
+
     def show_board(self, board: BoardState, missing_templates: list[int]) -> None:
         """顯示 BoardState；missing_templates 為缺失的模板 digit 清單。"""
+        self._last_board = board
+        self._last_missing = list(missing_templates)
         lines: list[str] = []
         for row in range(10):
             parts: list[str] = []
@@ -55,14 +68,15 @@ class RecognitionPanel(QWidget):
         self._matrix_label.setText("\n".join(lines))
 
         counts = board.counts()
-        status = (
-            f"數字 {counts[CellState.DIGIT]} 格 / "
-            f"空格 {counts[CellState.EMPTY]} 格 / "
-            f"未知 {counts[CellState.UNKNOWN]} 格"
+        status = t(
+            "panel.stats",
+            digit=counts[CellState.DIGIT],
+            empty=counts[CellState.EMPTY],
+            unknown=counts[CellState.UNKNOWN],
         )
         if missing_templates:
             missing = "、".join(str(digit) for digit in missing_templates)
-            status += f"\n缺少模板：{missing}（相關格子只能判為 UNKNOWN，請先建立模板）"
+            status += t("panel.missing", missing=missing)
         self._status_label.setText(status)
 
     def show_message(self, message: str) -> None:
@@ -72,8 +86,8 @@ class RecognitionPanel(QWidget):
 
 
 def make_group_box(panel: RecognitionPanel) -> QGroupBox:
-    """包一層 GroupBox，方便主視窗排版。"""
-    group = QGroupBox("辨識結果預覽（10 × 15）")
+    """包一層 GroupBox，方便主視窗排版。標題由呼叫端在切語言時重設。"""
+    group = QGroupBox(t("panel.group"))
     layout = QVBoxLayout(group)
     layout.addWidget(panel)
     return group

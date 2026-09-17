@@ -23,10 +23,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from core.paths import resource_path
+
 DIGITS = tuple(range(1, 10))
 TEMPLATE_SIZE = (48, 48)  # (width, height)：所有模板統一比對尺寸
 
-DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+DEFAULT_TEMPLATES_DIR = resource_path("templates")
 
 
 @dataclass

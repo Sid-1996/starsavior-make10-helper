@@ -1,7 +1,8 @@
 """使用者設定（ROI、視窗綁定、UI 偏好）的儲存與載入。
 
-設定以 JSON 儲存在專案根目錄 settings.json，
-程式重新啟動後可載入上次的狀態並自動恢復監控。
+設定以 JSON 儲存（原始碼執行放專案根目錄 settings.json；
+打包 exe 放 exe 旁邊 settings.json，綠色軟體免安裝、設定跟著走），
+程式重新啟動後可載入上次的狀態。
 檔案缺失或內容損毀時一律安全回退為「未設定」，不丟出例外。
 
 格式演進：
@@ -17,9 +18,11 @@ from pathlib import Path
 
 from core.game_window import DEFAULT_GAME_TITLE
 from core.hint_selector import DEFAULT_HINT_COUNT, MAX_HINT_COUNT
+from core.i18n import PREF_AUTO, PREF_CHOICES
+from core.paths import writable_dir
 from core.roi_model import Roi, RoiFrac
 
-DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.json"
+DEFAULT_SETTINGS_PATH = writable_dir() / "settings.json"
 
 
 class SettingsStore:
@@ -142,4 +145,23 @@ class SettingsStore:
             ui = {}
             data["ui"] = ui
         ui["max_hints"] = max(1, min(MAX_HINT_COUNT, count))
+        self._write(data)
+
+    def load_language(self) -> str:
+        """UI 語言偏好（auto/zh/en/ja/ko）；預設 auto（跟系統）。"""
+        ui = self._read().get("ui")
+        if isinstance(ui, dict) and ui.get("language") in PREF_CHOICES:
+            return ui["language"]
+        return PREF_AUTO
+
+    def save_language(self, code: str) -> None:
+        """儲存 UI 語言偏好；非法值正規化為 auto。"""
+        if code not in PREF_CHOICES:
+            code = PREF_AUTO
+        data = self._read()
+        ui = data.get("ui")
+        if not isinstance(ui, dict):
+            ui = {}
+            data["ui"] = ui
+        ui["language"] = code
         self._write(data)

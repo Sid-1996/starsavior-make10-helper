@@ -17,16 +17,11 @@ from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QDialog
 
 from core.board_align import align_to_board
+from core.i18n import t
 from core.roi_model import GRID_COLS, GRID_ROWS, Roi
 from gui.image_utils import qimage_to_gray
 
-_HINT_IDLE = "按住滑鼠左鍵拖曳，框選 10 × 15 棋盤辨識區域（Esc 取消）"
-_HINT_DRAG = "X: {x}  Y: {y}  W: {w}  H: {h}"
-_HINT_ALIGNED = "✓ 已自動對齊 10×15 棋盤 — Enter／雙擊確認　Esc 取消　拖曳重選　A 切換自動對齊"
-_HINT_NOT_ALIGNED = (
-    "⚠ 自動對齊失敗，使用原始選取 — Enter／雙擊確認　Esc 取消　拖曳重選　A 切換自動對齊"
-)
-_HINT_ALIGN_OFF = "自動對齊：關 — Enter／雙擊確認　Esc 取消　拖曳重選　A 切換自動對齊"
+_DRAG_FORMAT = "X: {x}  Y: {y}  W: {w}  H: {h}"  # 座標數字，跨語言通用
 
 
 class RoiSelectorDialog(QDialog):
@@ -146,7 +141,7 @@ class RoiSelectorDialog(QDialog):
                 self._draw_grid(painter, rect)
 
         if self._drag_origin is not None and rect is not None:
-            text = _HINT_DRAG.format(
+            text = _DRAG_FORMAT.format(
                 x=self._screen_left + rect.x(),
                 y=self._screen_top + rect.y(),
                 w=rect.width(),
@@ -154,13 +149,13 @@ class RoiSelectorDialog(QDialog):
             )
         elif self._pending_rect is not None:
             if self._align_status == "ok":
-                text = _HINT_ALIGNED
+                text = t("selector.aligned")
             elif self._align_status == "failed":
-                text = _HINT_NOT_ALIGNED
+                text = t("selector.not_aligned")
             else:
-                text = _HINT_ALIGN_OFF
+                text = t("selector.align_off")
         else:
-            text = _HINT_IDLE
+            text = t("selector.idle")
         self._draw_hint(painter, text)
 
     def _draw_grid(self, painter: QPainter, rect: QRect) -> None:

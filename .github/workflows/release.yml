@@ -1,0 +1,38 @@
+# 打 tag（v*）即自動打包 Windows 綠色版 exe 並上傳到 Release。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安裝 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 安裝 Python 3.13
+        run: uv python install 3.13
+
+      - name: 同步依賴（含打包工具）
+        run: uv sync --group dev
+
+      - name: 打包單一 exe（免安裝綠色版）
+        run: >
+          uv run pyinstaller --noconfirm --clean --onefile --windowed
+          --name StarSaviorHelper
+          --add-data "templates;templates"
+          main.py
+
+      - name: 上傳到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/StarSaviorHelper.exe
+          generate_release_notes: true

@@ -19,6 +19,9 @@ from core.settings_store import SettingsStore  # noqa: E402
 
 @pytest.fixture(scope="module")
 def qapp():
+    from core.i18n import set_language
+
+    set_language("zh")  # UI 斷言以繁中為準，不隨系統語言浮動
     app = QApplication.instance() or QApplication([])
     yield app
 
