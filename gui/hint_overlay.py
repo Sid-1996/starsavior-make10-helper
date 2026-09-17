@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from core.grid import CellGeometry
@@ -25,6 +25,50 @@ from core.solver import Rectangle
 
 _BORDER_WIDTH = 3
 _DOT_RADIUS = 7
+
+
+@dataclass(frozen=True)
+class HintShapes:
+    """實體螢幕像素座標：外框（左閉右開邊界）與起/終點（格子中心）。"""
+
+    border: tuple[float, float, float, float]  # (x0, y0, x1, y1)
+    start: tuple[float, float]  # 第一格 center（滑鼠按住點）
+    end: tuple[float, float]  # 最後一格 center（滑鼠放開點）
+
+
+def overlay_present(
+    image,
+    shapes: HintShapes,
+    roi,
+    overlay_origin: tuple[int, int] = (0, 0),
+) -> bool:
+    """檢查 ROI 截圖裡是否還殘留 Overlay 筆跡（乾淨重辨識前的驗證）。
+
+    沿外框四邊中點 + 起終點共 6 個採樣點，找 Overlay 專用的亮綠/亮青
+    （G>=200 且 G-R>=120；遊戲棋盤本身只有白/灰/黑，不會有這種顏色）。
+    至少 2 點命中才算存在，避免抗鋸齒邊緣誤判。image 為 ROI 裁圖。
+    """
+    if not isinstance(image, QImage) or image.isNull():
+        return False
+    x0, y0, x1, y1 = shapes.border
+    points = [
+        ((x0 + x1) / 2, y0),
+        ((x0 + x1) / 2, y1),
+        (x0, (y0 + y1) / 2),
+        (x1, (y0 + y1) / 2),
+        shapes.start,
+        shapes.end,
+    ]
+    hits = 0
+    for sx, sy in points:
+        px = round(sx - overlay_origin[0] - roi.x)
+        py = round(sy - overlay_origin[1] - roi.y)
+        if not 0 <= px < image.width() or not 0 <= py < image.height():
+            continue
+        color = image.pixelColor(px, py)
+        if color.green() >= 200 and color.green() - color.red() >= 120:
+            hits += 1
+    return hits >= 2
 
 
 def paint_hint(
@@ -66,15 +110,6 @@ def paint_hint(
                 2 * _DOT_RADIUS,
             )
         )
-
-
-@dataclass(frozen=True)
-class HintShapes:
-    """實體螢幕像素座標：外框（左閉右開邊界）與起/終點（格子中心）。"""
-
-    border: tuple[float, float, float, float]  # (x0, y0, x1, y1)
-    start: tuple[float, float]  # 第一格 center（滑鼠按住點）
-    end: tuple[float, float]  # 最後一格 center（滑鼠放開點）
 
 
 def hint_shapes(rectangle: Rectangle, geometries: Sequence[CellGeometry]) -> HintShapes:
@@ -135,6 +170,11 @@ class HintOverlay(QWidget):
     @property
     def current_shapes(self) -> HintShapes | None:
         return self._shapes
+
+    @property
+    def origin(self) -> tuple[int, int]:
+        """虛擬桌面原點（繪製座標 = 螢幕座標 - 原點）。"""
+        return self._origin
 
     def show_hint(self, rectangle: Rectangle, geometries: Sequence[CellGeometry]) -> None:
         """顯示推薦矩形（會自動顯示視窗；不搶焦點）。"""

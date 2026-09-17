@@ -43,7 +43,7 @@ def fake_capture(monkeypatch):
 def _window(tmp_path):
     from gui.main_window import MainWindow
 
-    win = MainWindow(store=SettingsStore(tmp_path / "settings.json"))
+    win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
     win._apply_roi(Roi(x=0, y=0, width=150, height=100))
     return win
 
@@ -67,7 +67,7 @@ class TestMonitorButtons:
     def test_start_without_roi_stays_stopped(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"))
+        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
         assert win.btn_start.isEnabled() is False
         win.close()
 
@@ -104,4 +104,78 @@ class TestMonitorTicks:
         assert win._monitor is not None
         assert win._monitor.board is not None
         assert win._monitor.hint is None
+        win.close()
+
+
+class TestCleanCaptureRetry:
+    def _pair_window(self, qapp, tmp_path):
+        from core.board_state import BoardState, Cell, CellState
+
+        win = _window(tmp_path)
+        cells = []
+        for row in range(10):
+            for column in range(15):
+                if (row, column) == (0, 0):
+                    cells.append(Cell(row, column, CellState.DIGIT, digit=4))
+                elif (row, column) == (0, 1):
+                    cells.append(Cell(row, column, CellState.DIGIT, digit=6))
+                else:
+                    cells.append(Cell(row, column, CellState.EMPTY))
+        win._show_board_hint(BoardState(cells=cells))
+        return win
+
+    def _polluted(self, shapes):
+        from PyQt6.QtGui import QPainter
+
+        from gui.hint_overlay import paint_hint
+
+        image = _solid(150, 100, 60)
+        painter = QPainter(image)
+        paint_hint(painter, shapes.border, shapes.start, shapes.end)
+        painter.end()
+        return image
+
+    def test_retries_until_clean(self, qapp, tmp_path, fast_settle, monkeypatch):
+        win = self._pair_window(qapp, tmp_path)
+        win.btn_start.click()
+        shapes = win._overlay.current_shapes
+        assert shapes is not None
+        calls: list = []
+        sequence = [self._polluted(shapes), self._polluted(shapes), _solid(150, 100, 60)]
+
+        def fake_capture(roi):
+            calls.append(roi)
+            return sequence.pop(0)
+
+        monkeypatch.setattr(core.screen_capture, "capture_roi", fake_capture)
+        result = win._capture_clean(shapes)
+        assert len(calls) == 3
+        assert len(sequence) == 0
+        assert result.width() == 150
+        log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
+        assert "overlay residue detected" in log_text
+        win.close()
+
+    def test_no_overlay_skips_check(self, qapp, tmp_path, fast_settle, monkeypatch):
+        win = _window(tmp_path)
+        win.btn_start.click()
+        calls: list = []
+
+        def fake_capture(roi):
+            calls.append(roi)
+            return _solid(150, 100, 60)
+
+        monkeypatch.setattr(core.screen_capture, "capture_roi", fake_capture)
+        win._capture_clean(None)
+        assert len(calls) == 1
+        win.close()
+
+    def test_status_and_log_trace_ticks(self, qapp, tmp_path, fake_capture, fast_settle):
+        win = _window(tmp_path)
+        win.btn_start.click()
+        assert "監控中 #0" in win.lbl_monitor.text()
+        win._on_monitor_tick()
+        assert "監控中 #1" in win.lbl_monitor.text()
+        log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
+        assert "start roi=" in log_text
         win.close()

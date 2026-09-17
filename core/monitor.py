@@ -33,7 +33,8 @@ class MonitorConfig:
     # 用比例而非全圖平均：消除 1~2 格只佔全 ROI 約 1%，平均值會被稀釋到看不見。
     diff_threshold: float = 0.002
     stable_required: int = 3  # 連續幾幀無明顯變化才算穩定（動畫等待）
-    settle_delay_sec: float = 0.15  # 乾淨重辨識前，隱藏 Overlay 後的等待秒數
+    settle_delay_sec: float = 0.25  # 乾淨重辨識前，隱藏 Overlay 後的等待秒數
+    max_clean_retries: int = 3  # 乾淨擷取仍殘留 Overlay 筆跡時的最大重試次數
 
 
 PIXEL_DIFF_THRESHOLD = 12
@@ -61,15 +62,25 @@ class StabilityTracker:
         self._baseline: np.ndarray | None = None
         self._run = 0
         self._emitted = False
+        self._last_ratio = 0.0
+
+    @property
+    def run_length(self) -> int:
+        """目前連續穩定計數（供狀態列顯示）。"""
+        return self._run
+
+    @property
+    def last_ratio(self) -> float:
+        """上一幀與前一幀的變化像素比例（供除錯日誌）。"""
+        return self._last_ratio
 
     def note_frame(self, frame: np.ndarray) -> bool:
         """餵入一幀；需要乾淨重辨識時回傳 True（每個穩定段只回傳一次）。"""
         if frame.ndim != 2 or frame.dtype != np.uint8:
             raise ValueError("frame 必須是 2D uint8 灰階影像")
-        if (
-            self._previous is None
-            or changed_pixel_ratio(frame, self._previous) > self._config.diff_threshold
-        ):
+        ratio = 0.0 if self._previous is None else changed_pixel_ratio(frame, self._previous)
+        self._last_ratio = ratio
+        if self._previous is None or ratio > self._config.diff_threshold:
             self._run = 1
             self._emitted = False
         else:

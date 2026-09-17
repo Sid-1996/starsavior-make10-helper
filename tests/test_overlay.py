@@ -10,7 +10,7 @@ pytest.importorskip("PyQt6.QtWidgets")
 
 import numpy as np  # noqa: E402
 from PyQt6.QtCore import Qt  # noqa: E402
-from PyQt6.QtGui import QImage  # noqa: E402
+from PyQt6.QtGui import QColor, QImage  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from core.grid import build_grid  # noqa: E402
@@ -92,7 +92,7 @@ class TestMainWindowWiring:
         from core.settings_store import SettingsStore
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"))
+        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
         win._apply_roi(Roi(x=0, y=0, width=450, height=300))
         return win
 
@@ -153,3 +153,44 @@ class TestMainWindowWiring:
         blank = QImage(300, 200, QImage.Format.Format_ARGB32)
         blank.fill(Qt.GlobalColor.transparent)
         assert _alpha_sum(blank) == 0
+
+
+class TestOverlayPresent:
+    def _painted(self):
+        from PyQt6.QtGui import QPainter
+
+        from gui.hint_overlay import paint_hint
+
+        shapes = hint_shapes(Rectangle(0, 0, 0, 1, 10, 2, 0, 2), _grid())
+        image = QImage(150, 100, QImage.Format.Format_RGB888)
+        image.fill(QColor(128, 128, 128))
+        painter = QPainter(image)
+        paint_hint(painter, shapes.border, shapes.start, shapes.end)
+        painter.end()
+        return shapes, image
+
+    def test_detects_residue(self, qapp):
+        from gui.hint_overlay import overlay_present
+
+        shapes, image = self._painted()
+        roi = Roi(x=0, y=0, width=150, height=100)
+        assert overlay_present(image, shapes, roi, (0, 0)) is True
+
+    def test_clean_frame_passes(self, qapp):
+        from gui.hint_overlay import overlay_present
+
+        shapes, _ = self._painted()
+        clean = QImage(150, 100, QImage.Format.Format_RGB888)
+        clean.fill(QColor(128, 128, 128))
+        roi = Roi(x=0, y=0, width=150, height=100)
+        assert overlay_present(clean, shapes, roi, (0, 0)) is False
+
+    def test_null_and_out_of_bounds_safe(self, qapp):
+        from gui.hint_overlay import overlay_present
+
+        shapes, _ = self._painted()
+        roi = Roi(x=5000, y=5000, width=150, height=100)  # 採樣點全落在圖外
+        clean = QImage(150, 100, QImage.Format.Format_RGB888)
+        clean.fill(QColor(128, 128, 128))
+        assert overlay_present(clean, shapes, roi, (0, 0)) is False
+        assert overlay_present(QImage(), shapes, roi, (0, 0)) is False

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import time
 import traceback
+from datetime import datetime
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
@@ -47,7 +49,7 @@ from core.settings_store import SettingsStore
 from core.solver import find_rectangles
 from core.templates import TemplateStore
 from gui.global_hotkey import GlobalHotkey
-from gui.hint_overlay import HintOverlay
+from gui.hint_overlay import HintOverlay, overlay_present
 from gui.image_utils import qimage_to_gray
 from gui.recognition_panel import RecognitionPanel
 from gui.roi_selector import RoiSelectorDialog
@@ -56,11 +58,23 @@ _PREVIEW_MIN_SIZE = (450, 300)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, store: SettingsStore | None = None, parent=None) -> None:
+    def __init__(
+        self,
+        store: SettingsStore | None = None,
+        parent=None,
+        log_dir: Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Star Savior 10 消除提示器")
         self.setMinimumWidth(560)
         self._store = store if store is not None else SettingsStore()
+        self._log_dir = (
+            Path(log_dir)
+            if log_dir is not None
+            else Path(__file__).resolve().parent.parent / "debug"
+        )
+        self._monitor_ticks = 0
+        self._monitor_note = ""
         self._roi: Roi | None = self._store.load_roi()
         self._templates = TemplateStore().load_all()
         self._overlay = HintOverlay()
@@ -349,9 +363,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "開始監控", "請先設定辨識區域。")
             return
         self._monitor = BoardMonitor()
+        self._monitor_ticks = 0
+        self._monitor_note = "啟動，等待穩定畫面"
         self._monitor_timer.start()
-        self.lbl_monitor.setText("監控狀態：監控中")
+        self._update_monitor_status()
         self._update_status()
+        self._monitor_log(f"start roi={self._roi}")
 
     def _on_stop_monitor(self) -> None:
         self._monitor_timer.stop()
@@ -360,10 +377,57 @@ class MainWindow(QMainWindow):
         self._overlay.hide_hint()
         self.lbl_monitor.setText("監控狀態：停止")
         self._update_status()
+        self._monitor_log("stop")
+
+    def _monitor_log(self, message: str) -> None:
+        """監控除錯日誌（debug/monitor.log，超過 1MB 自動輪替；失敗不影響監控）。"""
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            path = self._log_dir / "monitor.log"
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.unlink()
+            with path.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"{datetime.now():%H:%M:%S} {message}\n")
+        except OSError:
+            pass
+
+    def _update_monitor_status(self) -> None:
+        tracker_run = self._monitor.tracker.run_length if self._monitor else 0
+        required = self._monitor.config.stable_required if self._monitor else 0
+        note = f" · {self._monitor_note}" if self._monitor_note else ""
+        self.lbl_monitor.setText(
+            f"監控狀態：監控中 #{self._monitor_ticks} 穩定{tracker_run}/{required}{note}"
+        )
+
+    def _capture_clean(self, shapes) -> object:
+        """隱藏 Overlay 後擷取；殘留筆跡則重試（有上限，不無限等待）。
+
+        shapes: 隱藏前的提示幾何（None 表示本來就沒顯示，無需驗證）。
+        回傳彩色 QImage（呼叫端再轉灰階）；擷取失敗直接丟例外。
+        """
+        assert self._roi is not None
+        assert self._monitor is not None
+        config = self._monitor.config
+        retries = 0
+        while True:
+            image = screen_capture.capture_roi(self._roi)
+            if shapes is None or not overlay_present(
+                image, shapes, self._roi, self._overlay.origin
+            ):
+                if retries:
+                    self._monitor_log(f"clean capture ok after {retries} retries")
+                return image
+            retries += 1
+            self._monitor_log(f"overlay residue detected, retry {retries}")
+            if retries > config.max_clean_retries:
+                self._monitor_log("clean retry exhausted, use last frame")
+                return image
+            time.sleep(config.settle_delay_sec)
 
     def _on_monitor_tick(self) -> None:
         if self._monitor is None or self._roi is None or not self._roi.is_valid():
             return
+        self._monitor_ticks += 1
         try:
             frame = qimage_to_gray(screen_capture.capture_roi(self._roi))
         except Exception:  # 擷取失敗就停下來讓使用者處理，不無聲空轉
@@ -375,15 +439,23 @@ class MainWindow(QMainWindow):
             )
             return
         if not self._monitor.note_frame(frame):
+            self._update_monitor_status()
             return  # 無有效變化：保持目前 Hint（Hint Lock）
+        ratio = self._monitor.tracker.last_ratio
+        self._monitor_log(f"stable new frame tick={self._monitor_ticks} ratio={ratio:.4f}")
+        self._monitor_note = "重辨識中…"
+        self._update_monitor_status()
         # 穩定新畫面 → 隱藏 Overlay 後稍候，乾淨重辨識（框線不可入鏡）
         config = self._monitor.config
+        shapes_before = self._overlay.current_shapes
         self._overlay.hide_hint()
         QApplication.processEvents()
         time.sleep(config.settle_delay_sec)
         try:
-            clean = qimage_to_gray(screen_capture.capture_roi(self._roi))
-            board = build_board_state(clean, self._roi, DigitRecognizer(self._templates))
+            color = self._capture_clean(shapes_before)
+            board = build_board_state(
+                qimage_to_gray(color), self._roi, DigitRecognizer(self._templates)
+            )
         except Exception:
             self._on_stop_monitor()
             QMessageBox.critical(
@@ -402,6 +474,15 @@ class MainWindow(QMainWindow):
             else:
                 assert self._roi is not None
                 self._overlay.show_hint(snapshot.hint.rectangle, build_grid(self._roi))
+            rect = snapshot.hint.rectangle if snapshot.hint else None
+            self._monitor_note = f"已更新提示 {rect}" if rect else "此盤無合法矩形"
+            self._monitor_log(f"hint updated rect={rect}")
+        elif board.has_unknown():
+            self._monitor_note = "維持提示（UNKNOWN，等下次穩定畫面）"
+            self._monitor_log("keep hint (UNKNOWN)")
+        else:
+            self._monitor_note = "維持提示（棋盤未變）"
+        self._update_monitor_status()
         try:  # 吸收目前畫面（含 Overlay 像素），避免為自己的提示空轉
             self._monitor.rebaseline(qimage_to_gray(screen_capture.capture_roi(self._roi)))
         except Exception:
