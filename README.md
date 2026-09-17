@@ -7,7 +7,7 @@
 - [x] **Phase 1**：ROI 框選 + 設定儲存
 - [x] **Phase 2**：10×15 Grid + Cell State + Template Matching（含 1~9 完整模板）
 - [x] **Phase 3**：Rectangle Solver（純演算法，只吃 BoardState）
-- [ ] Phase 4：Hint Selector
+- [x] **Phase 4**：Hint Selector（最小 area + 固定掃描順序，只回一個 Hint）
 - [ ] Phase 5：透明 Click-through Overlay
 - [ ] Phase 6：畫面變化偵測
 - [ ] Phase 7：整合測試與 UX 修正
@@ -69,6 +69,7 @@ core/
     recognition.py          # DigitRecognizer：先 EMPTY、再 Template Matching、低信心 → UNKNOWN
     board_builder.py        # ROI 畫面 → 切格 → 辨識 → BoardState
     solver.py               # Rectangle Solver：純演算法，BoardState → 全部合法矩形
+    hint_selector.py        # Hint Selector：最小 area + 固定順序，只選唯一提示
 gui/
     main_window.py          # 主視窗（ROI 設定 / 自動校正 / 測試辨識 / 狀態）
     roi_selector.py         # 全螢幕框選視窗（含自動對齊）
