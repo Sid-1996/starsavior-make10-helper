@@ -100,6 +100,16 @@ uv run python main.py
 uv run pytest
 ```
 
+## CodeGraph（程式碼索引，方便維護查詢）
+
+```powershell
+codegraph sync    # 改完程式後同步索引（增量，很快）
+codegraph index   # 索引壞掉或大重構時整份重建
+```
+
+- 索引檔放 `.codegraph/`（SQLite），只活在本機、不進 git；新 clone 下來跑一次 `codegraph init` 即可
+- 日常查碼直接問（MCP `codegraph_explore`）：一次回傳相關符號原文＋呼叫鏈，不用 grep＋Read 繞圈
+
 ## 程式架構
 
 ```
