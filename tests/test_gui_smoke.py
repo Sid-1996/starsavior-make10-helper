@@ -26,7 +26,9 @@ class TestMainWindowSmoke:
     def test_constructor_without_saved_roi(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
-        win = MainWindow(auto_repair=False, store=SettingsStore(tmp_path / "settings.json"))
+        win = MainWindow(
+            auto_repair=False, auto_start=False, store=SettingsStore(tmp_path / "settings.json")
+        )
         assert win.windowTitle()
         assert "未設定" in win.lbl_roi_status.text()
         assert "棋盤尺寸：10 × 15" in win.lbl_board_size.text()
@@ -43,7 +45,7 @@ class TestMainWindowSmoke:
 
         store = SettingsStore(tmp_path / "settings.json")
         store.save_roi(Roi(x=11, y=22, width=450, height=300))
-        win = MainWindow(auto_repair=False, store=store)
+        win = MainWindow(auto_repair=False, auto_start=False, store=store)
         assert win.spin_x.value() == 11
         assert win.spin_y.value() == 22
         assert win.spin_w.value() == 450
@@ -55,7 +57,7 @@ class TestMainWindowSmoke:
         from gui.main_window import MainWindow
 
         path = tmp_path / "settings.json"
-        win = MainWindow(auto_repair=False, store=SettingsStore(path))
+        win = MainWindow(auto_repair=False, auto_start=False, store=SettingsStore(path))
         # 模擬使用者手動輸入 X / Y / W / H
         win.spin_x.setValue(10)
         win.spin_y.setValue(20)
@@ -70,7 +72,7 @@ class TestMainWindowSmoke:
         from gui.main_window import MainWindow
 
         store = SettingsStore(tmp_path / "settings.json")
-        win = MainWindow(auto_repair=False, store=store)
+        win = MainWindow(auto_repair=False, auto_start=False, store=store)
         win._apply_roi(Roi(x=10, y=20, width=450, height=300))
         # 寬度歸 0 → ROI 應清空且狀態回到未設定
         win.spin_w.setValue(0)

@@ -9,6 +9,7 @@ dependencies = [
     "mss>=10.0",
     "numpy>=1.26",
     "opencv-python>=4.10",
+    "windows-capture>=2.0.1; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

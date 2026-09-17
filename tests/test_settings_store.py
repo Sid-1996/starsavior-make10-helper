@@ -2,7 +2,8 @@
 
 import json
 
-from core.roi_model import Roi
+from core.game_window import DEFAULT_GAME_TITLE
+from core.roi_model import Roi, RoiFrac
 from core.settings_store import SettingsStore
 
 
@@ -65,3 +66,36 @@ class TestSettingsStore:
         store.save_roi(Roi(x=1, y=2, width=3, height=4))
         store.save_roi(Roi(x=10, y=20, width=300, height=200))
         assert store.load_roi() == Roi(x=10, y=20, width=300, height=200)
+
+
+class TestSettingsV2:
+    def test_roi_frac_roundtrip_and_migrates_legacy(self, tmp_path):
+        store = SettingsStore(tmp_path / "settings.json")
+        store.save_roi(Roi(x=1, y=2, width=3, height=4))  # 先有舊格式
+        frac = RoiFrac(x=0.25, y=0.25, width=0.5, height=0.5)
+        store.save_roi_frac(frac)
+        assert store.load_roi_frac() == frac
+        data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert "roi" not in data  # 遷移完成移除舊鍵
+
+    def test_roi_frac_invalid_returns_none(self, tmp_path):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"roi_frac": {"x": 0.5, "y": 0.5, "width": 0.6, "height": 0.6}}),
+            encoding="utf-8",
+        )
+        assert SettingsStore(path).load_roi_frac() is None
+
+    def test_window_title_default_and_save(self, tmp_path):
+        store = SettingsStore(tmp_path / "settings.json")
+        assert store.load_window_title() == DEFAULT_GAME_TITLE
+        store.save_window_title("MyGame")
+        assert store.load_window_title() == "MyGame"
+
+    def test_always_on_top_default_true(self, tmp_path):
+        store = SettingsStore(tmp_path / "settings.json")
+        assert store.load_always_on_top() is True
+        store.save_always_on_top(False)
+        assert store.load_always_on_top() is False
+        store.save_always_on_top(True)
+        assert store.load_always_on_top() is True

@@ -39,6 +39,36 @@ def _recognize(image: np.ndarray):
     return build_board_state(image, ROI, recognizer)
 
 
+def _recognize_at(image: np.ndarray, roi: Roi, cell: int):
+    """任意 cell 尺寸的辨識（解析度無關性驗證用）。"""
+    recognizer = DigitRecognizer(TemplateStore().load_all())
+    return build_board_state(image, roi, recognizer)
+
+
+class TestResolutionIndependence:
+    def test_different_cell_size_still_recognized(self):
+        """換解析度（80px 格）＋比例 ROI：同一模板照樣辨識（resize 到 48 比對）。"""
+        from core.roi_model import RoiFrac
+
+        cell = 80
+        roi = Roi(x=0, y=0, width=15 * cell, height=10 * cell)
+        templates = TemplateStore().load_all()
+        image = np.full((roi.height, roi.width), PANEL, dtype=np.uint8)
+        plant = {(0, 0): 4, (0, 1): 6, (9, 13): 5, (9, 14): 5}
+        for (row, column), digit in plant.items():
+            tile = cv2.resize(
+                templates.templates[digit], (cell, cell), interpolation=cv2.INTER_AREA
+            )
+            image[row * cell : (row + 1) * cell, column * cell : (column + 1) * cell] = tile
+        board = _recognize_at(image, roi, cell)
+        assert not board.has_unknown()
+        for (row, column), digit in plant.items():
+            assert board.at(row, column).digit == digit
+        # 比例 ROI 在此尺寸下換算回同一絕對座標
+        frac = RoiFrac.from_absolute(roi, 0, 0, roi.width, roi.height)
+        assert frac.to_absolute(0, 0, roi.width, roi.height) == roi
+
+
 class TestFullPipeline:
     def test_recognize_solve_select_shapes(self):
         plant = {(0, 0): 4, (0, 1): 6, (5, 5): 8, (5, 8): 2}

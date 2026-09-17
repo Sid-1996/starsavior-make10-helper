@@ -27,6 +27,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QGridLayout,
     QGroupBox,
     QLabel,
@@ -38,16 +39,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core import board_align, screen_capture
+from core import board_align, game_window, screen_capture, window_capture
 from core.board_builder import build_board_state
+from core.game_window import WindowInfo
 from core.grid import build_grid
 from core.hint_selector import Hint, select_hint
 from core.monitor import BoardMonitor, MonitorConfig
 from core.recognition import DigitRecognizer
-from core.roi_model import GRID_COLS, GRID_ROWS, Roi
+from core.roi_model import GRID_COLS, GRID_ROWS, Roi, RoiFrac, rect_iou
 from core.settings_store import SettingsStore
 from core.solver import find_rectangles
 from core.templates import TemplateStore
+from core.window_capture import WindowCaptureSession
 from gui.global_hotkey import GlobalHotkey
 from gui.hint_overlay import HintOverlay, overlay_present
 from gui.image_utils import qimage_to_gray
@@ -64,6 +67,7 @@ class MainWindow(QMainWindow):
         parent=None,
         log_dir: Path | None = None,
         auto_repair: bool = True,
+        auto_start: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Star Savior 10 消除提示器")
@@ -77,6 +81,10 @@ class MainWindow(QMainWindow):
         self._monitor_ticks = 0
         self._monitor_note = ""
         self._roi: Roi | None = self._store.load_roi()
+        self._roi_frac: RoiFrac | None = self._store.load_roi_frac()
+        self._game: WindowInfo | None = None
+        self._wgc: WindowCaptureSession | None = None
+        self._last_win_rect: tuple[int, int, int, int] | None = None
         self._templates = TemplateStore().load_all()
         self._overlay = HintOverlay()
         self._overlay_muted = False  # F8 隱藏後，監控迴圈不再自動顯示
@@ -88,13 +96,26 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._sync_spinboxes()
         self._update_status()
+        topmost = self._store.load_always_on_top()
+        self.chk_topmost.blockSignals(True)
+        self.chk_topmost.setChecked(topmost)
+        self.chk_topmost.blockSignals(False)
+        self._apply_topmost(topmost)
         if not self._hotkey.start():
             self.btn_hide_hint.setToolTip(
                 "隱藏 Overlay 提示（F8 全域快捷鍵註冊失敗，只能用此按鈕）。"
             )
-        if auto_repair:
-            # 遊戲視窗若移動，啟動時自動吸附（找不到就沿用舊設定）
+        if auto_repair or auto_start:
+            window_ok = self._bind_window()
+        else:
+            window_ok = False
+        if auto_repair and window_ok:
+            # 先解析（含舊格式遷移），再用後台幀驗證／吸附
+            self._resolve_roi()
             self._auto_repair_roi()
+        if auto_start and window_ok and self._resolve_roi():
+            # 偏好都記住了：直接進監控，零點擊
+            self._on_start_monitor()
 
     # ------------------------------------------------------------------ #
     # UI 建構
@@ -132,6 +153,8 @@ class MainWindow(QMainWindow):
         self.btn_hide_hint.setToolTip(
             "隱藏 Overlay 提示（Overlay 本身不接收滑鼠，只能在這裡關；F8 也可切換）。"
         )
+        self.chk_topmost = QCheckBox("主視窗置頂")
+        self.chk_topmost.setToolTip("單螢幕全螢幕遊戲時保持主視窗可操作；偏好會記住。")
         self.btn_start = QPushButton("開始監控")
         self.btn_stop = QPushButton("停止監控")
         self.btn_align.setToolTip(
@@ -151,6 +174,7 @@ class MainWindow(QMainWindow):
             self.btn_stop,
         ):
             btn_box.addWidget(btn)
+        btn_box.addWidget(self.chk_topmost)
         roi_layout.addLayout(btn_box, 0, 2, 4, 1)
         root.addWidget(roi_group)
 
@@ -191,9 +215,10 @@ class MainWindow(QMainWindow):
         self.btn_reselect.clicked.connect(self._on_select_roi)
         self.btn_align.clicked.connect(self._on_auto_align)
         self.btn_test.clicked.connect(self._on_test_recognition)
-        self.btn_hide_hint.clicked.connect(self._overlay.hide_hint)
+        self.btn_hide_hint.clicked.connect(self._on_hide_hint)
         self.btn_start.clicked.connect(self._on_start_monitor)
         self.btn_stop.clicked.connect(self._on_stop_monitor)
+        self.chk_topmost.toggled.connect(self._on_topmost_toggled)
         self.spin_x.valueChanged.connect(self._on_spin_changed)
         self.spin_y.valueChanged.connect(self._on_spin_changed)
         self.spin_w.valueChanged.connect(self._on_spin_changed)
@@ -214,9 +239,10 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         time.sleep(0.2)
         try:
-            left, top, width, height = screen_capture.get_virtual_screen_geometry()
-            background = screen_capture.capture_virtual_screen()
-            selector = RoiSelectorDialog(background, left, top, width, height)
+            background, origin = self._selector_background()
+            selector = RoiSelectorDialog(
+                background, origin[0], origin[1], background.width(), background.height()
+            )
         except Exception:  # 框選流程任何錯誤都以對話框呈現，避免程式直接中止
             self._restore_main_window()
             QMessageBox.critical(
@@ -232,6 +258,32 @@ class MainWindow(QMainWindow):
         if result and selector.roi is not None:
             self._apply_roi(selector.roi)
 
+    def _selector_background(self) -> tuple[object, tuple[int, int]]:
+        """框選背景：後台遊戲幀優先（被蓋也能框）；否則前景全螢幕。
+
+        回傳 (QImage, (left, top))；背景座標系＝回傳影像座標系。
+        後台幀的座標系是遊戲客戶區，框選結果可直接換算成比例。
+        """
+        if self._game is not None:
+            frame = window_capture.grab_one(self._game.hwnd, timeout_sec=3.0)
+            if frame is not None:
+                return self._bgr_to_qimage(frame), (self._game.left, self._game.top)
+        if self._game is not None:
+            game_window.bring_to_front(self._game.hwnd)
+            time.sleep(0.3)
+        left, top, width, height = screen_capture.get_virtual_screen_geometry()
+        return screen_capture.capture_virtual_screen(), (left, top)
+
+    @staticmethod
+    def _bgr_to_qimage(bgr) -> object:
+        """BGR numpy → QImage（複製 buffer，呼叫端可安全持有）。"""
+        import cv2
+        from PyQt6.QtGui import QImage
+
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        height, width, _ = rgb.shape
+        return QImage(rgb.data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
+
     def _restore_main_window(self) -> None:
         self.showNormal()
         self.raise_()
@@ -242,9 +294,88 @@ class MainWindow(QMainWindow):
             self._on_stop_monitor()  # ROI 變更時先停監控，避免用舊基準比對
         self._roi = roi
         self._store.save_roi(roi)
+        if self._game is not None:
+            # 視窗已知：同步存一份比例（之後搬窗／換解析度自動跟著走）
+            try:
+                frac = RoiFrac.from_absolute(
+                    roi, self._game.left, self._game.top, self._game.width, self._game.height
+                )
+            except ValueError:
+                frac = None
+            if frac is not None and frac.is_valid():
+                self._roi_frac = frac
+                self._store.save_roi_frac(frac)
         self._sync_spinboxes()
         self._update_status()
         self._render_preview()
+
+    # ------------------------------------------------------------------ #
+    # 目標視窗綁定 + ROI 解析 + 偏好
+    # ------------------------------------------------------------------ #
+    def _bind_window(self) -> bool:
+        """綁定遊戲視窗；找不到時狀態列說明原因並回傳 False。"""
+        title = self._store.load_window_title()
+        info = game_window.find_game_window(title)
+        if info is None or not info.is_valid():
+            self._game = None
+            self.lbl_roi_status.setText(f"辨識區域：未綁定（找不到「{title}」視窗，請先開啟遊戲）")
+            return False
+        self._game = info
+        self._last_win_rect = (info.left, info.top, info.width, info.height)
+        return True
+
+    def _resolve_roi(self) -> bool:
+        """比例→絕對座標（＋舊格式遷移）；失敗回傳 False。"""
+        if self._roi_frac is not None and self._roi_frac.is_valid() and self._game is not None:
+            roi = self._roi_frac.to_absolute(
+                self._game.left, self._game.top, self._game.width, self._game.height
+            )
+            if roi.is_valid():
+                self._roi = roi
+                self._sync_spinboxes()
+                self._update_status()
+                return True
+            return False
+        if self._game is not None:
+            legacy = self._store.load_roi()
+            if legacy is not None and legacy.is_valid():
+                try:
+                    frac = RoiFrac.from_absolute(
+                        legacy,
+                        self._game.left,
+                        self._game.top,
+                        self._game.width,
+                        self._game.height,
+                    )
+                except ValueError:
+                    frac = None
+                if frac is not None and frac.is_valid():
+                    self._roi_frac = frac
+                    self._store.save_roi_frac(frac)
+                    return self._resolve_roi()
+        if self._roi is not None and self._roi.is_valid():
+            return True  # 舊絕對座標沿用（僅供顯示；監控仍需綁定視窗）
+        self.lbl_roi_status.setText("辨識區域：未設定（請框選辨識區域）")
+        return False
+
+    def _apply_topmost(self, enabled: bool) -> None:
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+
+    def _on_topmost_toggled(self, checked: bool) -> None:
+        self._store.save_always_on_top(checked)
+        self._apply_topmost(checked)
+        self.show()  # flag 變更需重秀才生效
+
+    def _on_hide_hint(self) -> None:
+        self._overlay_muted = True
+        self._overlay.hide_hint()
+
+    def _on_hotkey_toggle(self) -> None:
+        """F8：監控總開關（開始／停止），只控制提示流程，不操作遊戲。"""
+        if self._monitor_timer.isActive():
+            self._on_stop_monitor()
+        else:
+            self._on_start_monitor()
 
     # ------------------------------------------------------------------ #
     # 自動校正
@@ -303,79 +434,58 @@ class MainWindow(QMainWindow):
             return
         self._apply_roi(result)
 
-    def _looks_like_board(self, roi: Roi) -> bool:
-        """用真實模板驗證該區域是否為棋盤（UNKNOWN 占比夠低才算）。
-
-        真棋盤（滿盤或已消除）幾乎每格都能確定是 DIGIT 或 EMPTY；
-        桌面圖示/文字等非棋盤內容則大量 UNKNOWN。
-        全灰等素色會全判 EMPTY 而通過——但 align 階段不會把素色當棋盤，
-        兩層是互補的。模板不完整時無法驗證，回傳 True（盡力相信 align 結果）。
-        擷取失敗回傳 False。
-        """
-        if not self._templates.is_complete():
-            return True
-        try:
-            gray = qimage_to_gray(
-                screen_capture.capture_region(roi.x, roi.y, roi.width, roi.height)
-            )
-            board = build_board_state(gray, roi, DigitRecognizer(self._templates))
-        except Exception:
-            return False
-        unknowns = sum(1 for cell in board.cells if cell.state.name == "UNKNOWN")
-        return unknowns / len(board.cells) < 0.3
-
     def _auto_repair_roi(self) -> None:
-        """啟動時自動修復 ROI：遊戲視窗若移動就吸附到新位置並儲存。
+        """啟動時自動修復：用後台幀驗證比例 ROI，跑掉就地吸附並儲存。
 
-        兩階段：先在舊位置附近找（±30%，小幅移動）；找不到再全螢幕搜尋
-        ＋辨識驗證（大幅移動）。都找不到就沿用舊設定並提示，不擋啟動。
+        驗證＝在比例框內重跑對齊，結果≈原框（IoU>0.9）即正確；
+        失配→放大範圍重找→尺寸合理才採用。
+        無比例／無視窗／模板不全／抓不到幀／遊戲不在對戰畫面 → 沿用現狀並提示，不擋啟動。
         """
-        if self._roi is None or not self._roi.is_valid():
+        if (
+            self._roi_frac is None
+            or not self._roi_frac.is_valid()
+            or self._game is None
+            or not self._templates.is_complete()
+        ):
             return
-        saved = self._roi
-        # 階段一：附近搜尋
-        try:
-            margin_x = int(round(saved.width * 0.3))
-            margin_y = int(round(saved.height * 0.3))
-            vl, vt, vw, vh = screen_capture.get_virtual_screen_geometry()
-            left = max(saved.x - margin_x, vl)
-            top = max(saved.y - margin_y, vt)
-            right = min(saved.x + saved.width + margin_x, vl + vw)
-            bottom = min(saved.y + saved.height + margin_y, vt + vh)
-            gray = qimage_to_gray(
-                screen_capture.capture_region(left, top, right - left, bottom - top)
-            )
-            found = self._align_to_roi(
-                gray,
-                (saved.x - left, saved.y - top, saved.width, saved.height),
-                (left, top),
-            )
-        except Exception:
-            return  # 無法擷取（測試環境等）：沿用設定
-        if found is not None:
-            if found == saved:
-                return  # 位置沒變，無事發生
-            self._apply_roi(found)
-            self._note_roi_status("（啟動時已自動對齊到新位置）")
+        frame = window_capture.grab_one(self._game.hwnd, timeout_sec=2.0)
+        if frame is None:
             return
-        # 階段二：全螢幕搜尋（遊戲視窗大幅移動時）
-        try:
-            full = qimage_to_gray(screen_capture.capture_virtual_screen())
-            candidate = self._align_to_roi(full, (0, 0, vw, vh), (vl, vt))
-        except Exception:
-            return
-        if candidate is None:
-            self._note_roi_status("（未找到棋盤：請先開啟遊戲，再按自動校正）")
+        gray = window_capture.to_grayscale(frame)
+        win = self._game
+        frac = self._roi_frac
+        frame_h, frame_w = gray.shape[:2]
+        lx, ly = round(frac.x * frame_w), round(frac.y * frame_h)
+        lw, lh = round(frac.width * frame_w), round(frac.height * frame_h)
+        box = frac.to_absolute(win.left, win.top, win.width, win.height)
+        check = self._align_to_roi(gray, (lx, ly, lw, lh), (win.left, win.top))
+        if check is not None and rect_iou(check, box) > 0.9:
+            return  # 對得上，無事發生
+        # 放大範圍重找（±1/3，夾在幀內）
+        ex0 = max(0, lx - lw // 3)
+        ey0 = max(0, ly - lh // 3)
+        ex1 = min(frame_w, lx + lw + lw // 3)
+        ey1 = min(frame_h, ly + lh + lh // 3)
+        found = self._align_to_roi(gray, (ex0, ey0, ex1 - ex0, ey1 - ey0), (win.left, win.top))
+        if found is None:
+            self._note_roi_status("（未在畫面上找到棋盤：若遊戲不在對戰畫面可忽略）")
             return
         if (
-            abs(candidate.width - saved.width) / saved.width > 0.15
-            or abs(candidate.height - saved.height) / saved.height > 0.15
+            abs(found.width - box.width) / box.width > 0.15
+            or abs(found.height - box.height) / box.height > 0.15
         ):
             return  # 尺寸差太多：不敢認，沿用舊設定
-        if not self._looks_like_board(candidate):
-            self._note_roi_status("（未找到棋盤：請先開啟遊戲，再按自動校正）")
+        try:
+            new_frac = RoiFrac.from_absolute(found, win.left, win.top, win.width, win.height)
+        except ValueError:
             return
-        self._apply_roi(candidate)
+        if not new_frac.is_valid():
+            return
+        self._roi_frac = new_frac
+        self._store.save_roi_frac(new_frac)
+        self._roi = found
+        self._sync_spinboxes()
+        self._update_status()
         self._note_roi_status("（啟動時已自動對齊到新位置）")
 
     def _note_roi_status(self, suffix: str) -> None:
@@ -385,16 +495,46 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # 測試辨識（Phase 2）
     # ------------------------------------------------------------------ #
+    def _grab_roi_bgr(self):
+        """後台 ROI 的 BGR 影像；無視窗/無比例/抓不到幀回傳 None（呼叫端走前景備援）。"""
+        if self._game is None or self._roi_frac is None or not self._roi_frac.is_valid():
+            return None
+        frame = window_capture.grab_one(self._game.hwnd, timeout_sec=3.0)
+        if frame is None:
+            return None
+        height, width, _ = frame.shape
+        frac = self._roi_frac
+        x0 = max(0, min(round(frac.x * width), width))
+        y0 = max(0, min(round(frac.y * height), height))
+        x1 = max(0, min(x0 + round(frac.width * width), width))
+        y1 = max(0, min(y0 + round(frac.height * height), height))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return frame[y0:y1, x0:x1].copy()
+
+    def _grab_roi_image(self) -> object:
+        """ROI 彩色圖：後台幀按比例裁；無後台幀則 mss 前景。失敗丟例外。"""
+        bgr = self._grab_roi_bgr()
+        if bgr is not None:
+            return self._bgr_to_qimage(bgr)
+        if self._roi is None or not self._roi.is_valid():
+            raise ValueError("未設定辨識區域")
+        return screen_capture.capture_roi(self._roi)
+
     def _on_test_recognition(self) -> None:
         if self._roi is None or not self._roi.is_valid():
             QMessageBox.warning(self, "測試辨識", "請先設定辨識區域。")
             return
-        # 擷取前先隱藏 Overlay：不能把自己的提示框一起截進去污染辨識
-        self._overlay.hide_hint()
-        QApplication.processEvents()
+        # 後台幀不可能含 Overlay；前景備援才需先隱藏
+        background = self._grab_roi_bgr()
+        if background is None:
+            self._overlay.hide_hint()
+            QApplication.processEvents()
         try:
-            image = screen_capture.capture_roi(self._roi)
-            gray = qimage_to_gray(image)
+            if background is not None:
+                gray = window_capture.to_grayscale(background)
+            else:
+                gray = qimage_to_gray(screen_capture.capture_roi(self._roi))
         except Exception:  # 擷取或轉換失敗時以對話框呈現，避免程式直接中止
             QMessageBox.critical(
                 self,
@@ -437,12 +577,6 @@ class MainWindow(QMainWindow):
             "可用「隱藏提示」關閉。"
         )
 
-    def _on_hotkey_toggle(self) -> None:
-        """F8：有提示時切換 Overlay 顯示/隱藏（只控制顯示，不操作遊戲）。"""
-        state = self._overlay.toggle_display()
-        if state is not None:
-            self._overlay_muted = not state
-
     def _show_board_hint(self, board):
         """對無 UNKNOWN 的棋盤計算提示並顯示 Overlay；回傳 Hint（供測試直接呼叫）。"""
         self._overlay_muted = False  # 使用者手動要求顯示，解除 F8 靜音
@@ -453,22 +587,124 @@ class MainWindow(QMainWindow):
         return hint
 
     # ------------------------------------------------------------------ #
-    # 監控迴圈（Phase 6）：畫面變化 → 等待穩定 → 乾淨重辨識 → Hint Lock
+    # 監控迴圈：畫面變化 → 等待穩定 → 乾淨重辨識 → Hint Lock
+    # 抓圖雙管線：WGC 後台（被蓋也活，不含 Overlay）優先；不可用退回 mss 前景
     # ------------------------------------------------------------------ #
     def _on_start_monitor(self) -> None:
-        if self._roi is None or not self._roi.is_valid():
-            QMessageBox.warning(self, "開始監控", "請先設定辨識區域。")
+        if not self._bind_window():
+            QMessageBox.warning(self, "開始監控", "找不到遊戲視窗，請先開啟遊戲。")
             return
+        if not self._resolve_roi():
+            QMessageBox.warning(self, "開始監控", "尚未設定辨識區域，請先框選。")
+            return
+        self._begin_session()
+
+    def _begin_session(self) -> None:
+        """建立監控狀態＋抓圖會話＋timer（綁定/解析已就緒時呼叫）。"""
         self._monitor = BoardMonitor()
         self._monitor_ticks = 0
         self._monitor_note = "啟動，等待穩定畫面"
+        self._start_wgc()
         self._monitor_timer.start()
         self._update_monitor_status()
         self._update_status()
-        self._monitor_log(f"start roi={self._roi}")
+        self._monitor_log(f"start roi={self._roi} wgc={self._wgc is not None}")
+
+    def _start_wgc(self) -> None:
+        """啟動後台會話；失敗就維持 None（前景備援），不丟例外。"""
+        self._stop_wgc()
+        if self._game is None:
+            return
+        session = WindowCaptureSession(self._game.hwnd)
+        if session.start():
+            self._wgc = session
+            self._monitor_log(f"wgc session hwnd={self._game.hwnd}")
+        else:
+            self._wgc = None
+            self._monitor_note = "前景模式（遊戲需保持可見）"
+            self._monitor_log("wgc unavailable, foreground fallback")
+
+    def _stop_wgc(self) -> None:
+        if self._wgc is not None:
+            self._wgc.stop()
+            self._wgc = None
+
+    def _live_window(self) -> WindowInfo | None:
+        """刷新遊戲客戶區（跟著移動走）；死了就試著重綁，否則 None。"""
+        if self._game is None:
+            return self._rebind_window()
+        live = game_window.refresh_window(self._game.hwnd)
+        if live is not None and live.is_valid():
+            self._game = live
+            return live
+        return self._rebind_window()
+
+    def _rebind_window(self) -> WindowInfo | None:
+        info = game_window.find_game_window(self._store.load_window_title())
+        if info is None or not info.is_valid():
+            return None
+        self._game = info
+        self._last_win_rect = None  # 強制重定位 Overlay
+        self._stop_wgc()
+        if self._monitor is not None:
+            self._start_wgc()
+        if self._roi_frac is not None:
+            self._resolve_roi()
+        self._monitor_log(f"rebind window {info.left},{info.top},{info.width}x{info.height}")
+        return info
+
+    def _grab_roi_gray(self) -> object:
+        """ROI 灰階：WGC 按比例裁；無 WGC 則 mss 前景絕對座標。失敗丟例外。"""
+        if self._wgc is not None and self._roi_frac is not None and self._roi_frac.is_valid():
+            latest = self._wgc.latest()
+            assert latest is not None, "尚無後台幀"
+            full = window_capture.to_grayscale(latest[0])
+            height, width = full.shape[:2]
+            frac = self._roi_frac
+            x0 = max(0, min(round(frac.x * width), width))
+            y0 = max(0, min(round(frac.y * height), height))
+            x1 = max(0, min(x0 + round(frac.width * width), width))
+            y1 = max(0, min(y0 + round(frac.height * height), height))
+            if x1 <= x0 or y1 <= y0:
+                raise ValueError("ROI 比例超出後台幀範圍")
+            return full[y0:y1, x0:x1].copy()
+        if self._roi is None or not self._roi.is_valid():
+            raise ValueError("未設定辨識區域")
+        return qimage_to_gray(screen_capture.capture_roi(self._roi))
+
+    def _frame_is_stale(self) -> bool:
+        """後台幀是否過舊（最小化/凍結時為 True；無 WGC 回傳 False）。"""
+        if self._wgc is None or self._monitor is None:
+            return False
+        latest = self._wgc.latest()
+        if latest is None:
+            return True
+        interval = self._monitor.config.frame_interval_ms / 1000
+        return time.monotonic() - latest[1] > max(2.0, 3 * interval)
+
+    def _refresh_rect_and_overlay(self, live: WindowInfo) -> None:
+        """視窗移動/縮放時刷新絕對 ROI 並原地重定位 Overlay。"""
+        rect = (live.left, live.top, live.width, live.height)
+        if self._last_win_rect == rect:
+            return
+        self._last_win_rect = rect
+        if self._roi_frac is not None and self._roi_frac.is_valid():
+            roi = self._roi_frac.to_absolute(live.left, live.top, live.width, live.height)
+            if roi.is_valid():
+                self._roi = roi
+                self._sync_spinboxes()
+                self._update_status()
+        if (
+            self._monitor is not None
+            and self._monitor.hint is not None
+            and self._roi is not None
+            and not self._overlay_muted
+        ):
+            self._overlay.show_hint(self._monitor.hint.rectangle, build_grid(self._roi))
 
     def _on_stop_monitor(self) -> None:
         self._monitor_timer.stop()
+        self._stop_wgc()
         self._monitor = None
         self._overlay_muted = False
         self._overlay.hide_hint()
@@ -555,8 +791,28 @@ class MainWindow(QMainWindow):
         if self._monitor is None or self._roi is None or not self._roi.is_valid():
             return
         self._monitor_ticks += 1
+        live = self._live_window()
+        if live is None:
+            self._on_stop_monitor()
+            QMessageBox.critical(self, "監控失敗", "遊戲視窗已關閉，已停止監控。")
+            return
+        if game_window.is_minimized(live.hwnd):
+            self._monitor_note = "等待遊戲視窗（最小化中）"
+            self._update_monitor_status()
+            return
+        if self._wgc is not None:
+            if self._wgc.closed:
+                self._monitor_log("wgc closed, restart session")
+                self._overlay.hide_hint()
+                self._begin_session()
+                return
+            if self._frame_is_stale():
+                self._monitor_note = "等待後台畫面更新…"
+                self._update_monitor_status()
+                return
+        self._refresh_rect_and_overlay(live)
         try:
-            frame = qimage_to_gray(screen_capture.capture_roi(self._roi))
+            frame = self._grab_roi_gray()
         except Exception:  # 擷取失敗就停下來讓使用者處理，不無聲空轉
             self._on_stop_monitor()
             QMessageBox.critical(
@@ -573,36 +829,41 @@ class MainWindow(QMainWindow):
         self._dump_frame("last_stable.png", frame)
         self._monitor_note = "重辨識中…"
         self._update_monitor_status()
-        # 穩定新畫面 → 隱藏 Overlay 後稍候，乾淨重辨識（框線不可入鏡）
-        config = self._monitor.config
-        shapes_before = self._overlay.current_shapes
-        self._overlay.hide_hint()
-        QApplication.processEvents()
-        time.sleep(config.settle_delay_sec)
-        try:
-            color = self._capture_clean(shapes_before)
-            if color is None:  # 殘留消不掉：放棄本次重建，等下次變化
-                self._monitor_note = "維持提示（Overlay 未消失，跳過本次）"
-                self._update_monitor_status()
-                self._restore_overlay()
-                try:
-                    self._monitor.rebaseline(qimage_to_gray(screen_capture.capture_roi(self._roi)))
-                except Exception:
-                    pass
+        if self._wgc is not None:
+            # 後台幀不可能含本工具 Overlay：直接辨識，無需隱藏重試
+            self._dump_frame("last_clean.png", frame)
+            board = build_board_state(frame, self._roi, DigitRecognizer(self._templates))
+        else:
+            # 前景備援：隱藏 Overlay 後稍候，乾淨重辨識（框線不可入鏡）
+            config = self._monitor.config
+            shapes_before = self._overlay.current_shapes
+            self._overlay.hide_hint()
+            QApplication.processEvents()
+            time.sleep(config.settle_delay_sec)
+            try:
+                color = self._capture_clean(shapes_before)
+                if color is None:  # 殘留消不掉：放棄本次重建，等下次變化
+                    self._monitor_note = "維持提示（Overlay 未消失，跳過本次）"
+                    self._update_monitor_status()
+                    self._restore_overlay()
+                    try:
+                        self._monitor.rebaseline(self._grab_roi_gray())
+                    except Exception:
+                        pass
+                    return
+                self._dump_frame("last_clean.png", color)
+                board = build_board_state(
+                    qimage_to_gray(color), self._roi, DigitRecognizer(self._templates)
+                )
+            except Exception:
+                self._on_stop_monitor()
+                QMessageBox.critical(
+                    self,
+                    "監控失敗",
+                    "重新辨識時發生錯誤，已停止監控：\n" + traceback.format_exc(),
+                )
                 return
-            self._dump_frame("last_clean.png", color)
-            board = build_board_state(
-                qimage_to_gray(color), self._roi, DigitRecognizer(self._templates)
-            )
-        except Exception:
-            self._on_stop_monitor()
-            QMessageBox.critical(
-                self,
-                "監控失敗",
-                "重新辨識時發生錯誤，已停止監控：\n" + traceback.format_exc(),
-            )
-            return
-        self._restore_overlay()
+            self._restore_overlay()
         self._log_board_summary(board)
         snapshot = self._monitor.commit_board(board)
         if snapshot.changed:
@@ -623,7 +884,7 @@ class MainWindow(QMainWindow):
             self._monitor_note = "維持提示（棋盤未變）"
         self._update_monitor_status()
         try:  # 吸收目前畫面（含 Overlay 像素），避免為自己的提示空轉
-            self._monitor.rebaseline(qimage_to_gray(screen_capture.capture_roi(self._roi)))
+            self._monitor.rebaseline(self._grab_roi_gray())
         except Exception:
             pass
 
@@ -702,7 +963,7 @@ class MainWindow(QMainWindow):
             self.preview_label.setText("尚未設定辨識區域")
             return
         try:
-            image = screen_capture.capture_roi(self._roi)
+            image = self._grab_roi_image()
         except Exception as exc:  # ROI 落在螢幕外或擷取環境異常時不中斷 UI
             self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText(f"預覽失敗：{exc}")

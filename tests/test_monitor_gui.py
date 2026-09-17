@@ -40,11 +40,35 @@ def fake_capture(monkeypatch):
     monkeypatch.setattr(core.screen_capture, "capture_roi", lambda roi: _solid(150, 100, 60))
 
 
+@pytest.fixture(autouse=True)
+def _fake_window_layer(monkeypatch):
+    """隔離真實視窗：綁定/刷新/會話/對話框一律走假路徑，避免碰到本機遊戲。"""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from core.game_window import WindowInfo
+    from gui.main_window import MainWindow
+
+    def fake_bind(self):
+        self._game = WindowInfo(hwnd=424242, left=0, top=0, width=1920, height=1080)
+        self._last_win_rect = (0, 0, 1920, 1080)
+        return True
+
+    monkeypatch.setattr(MainWindow, "_bind_window", fake_bind)
+    monkeypatch.setattr(MainWindow, "_live_window", lambda self: self._game)
+    monkeypatch.setattr(MainWindow, "_start_wgc", lambda self: setattr(self, "_wgc", None))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+
+
 def _window(tmp_path):
     from gui.main_window import MainWindow
 
     win = MainWindow(
-        auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+        auto_repair=False,
+        auto_start=False,
+        store=SettingsStore(tmp_path / "settings.json"),
+        log_dir=tmp_path,
     )
     win._apply_roi(Roi(x=0, y=0, width=150, height=100))
     return win
@@ -88,7 +112,10 @@ class TestMonitorButtons:
         from gui.main_window import MainWindow
 
         win = MainWindow(
-            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
         )
         assert win.btn_start.isEnabled() is False
         win.close()
@@ -240,7 +267,10 @@ class TestFullSimulation:
         monkeypatch.setattr(core.screen_capture, "capture_roi", lambda roi: frames.pop(0))
 
         win = MainWindow(
-            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
         )
         win._apply_roi(Roi(x=0, y=0, width=930, height=620))
         win.btn_start.click()

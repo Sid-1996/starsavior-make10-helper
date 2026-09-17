@@ -187,13 +187,6 @@ class HintOverlay(QWidget):
         self._shapes = None
         self.hide()
 
-    def toggle_display(self) -> bool | None:
-        """F8 用：有提示時切換顯示/隱藏並保留提示內容；無提示回傳 None。"""
-        if self._shapes is None:
-            return None
-        self.setVisible(not self.isVisible())
-        return self.isVisible()
-
     def _to_local(
         self, shapes: HintShapes
     ) -> tuple[tuple[float, float, float, float], tuple[float, float], tuple[float, float]]:

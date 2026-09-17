@@ -28,7 +28,20 @@ uv sync
 uv run python main.py
 ```
 
-## Phase 1 使用方式
+## 使用方式（目標：打開即用，零點擊恢復監控）
+
+1. 開啟 StarSavior 遊戲（標題即 `StarSavior` 的視窗），再開本工具
+2. 工具自動綁定遊戲視窗；若已有上次的棋盤框選，直接進入監控
+3. 第一次使用才需按「**框選辨識區域**」：以後台遊戲畫面為底拖曳框住 10 × 15 棋盤
+ （**Enter 或雙擊＝確認**、**Esc＝取消**；存的是視窗相對比例，搬窗／換解析度免重框）
+4. 之後每次啟動：綁定 → 驗證 → 自動開始監控；失敗會在狀態列說原因
+5. `F8`＝開始／停止監控（監控總開關）；「**隱藏提示**」只關顯示；
+ 「**主視窗置頂**」打勾可在全螢幕遊戲上操作 GUI（偏好會記住）
+
+抓圖管線：Windows 後台抓圖（被蓋也活）優先，不可用時退回前景；
+遊戲最小化顯示「等待遊戲視窗」，關閉自動停止。
+
+## Phase 1 使用方式（框選細節）
 
 1. 點「**框選辨識區域**」→ 主視窗暫時隱藏，出現全螢幕選取介面
 2. 按住滑鼠左鍵**拖曳**大略框住遊戲的 10 × 15 數字棋盤（任意方向皆可，畫面上會即時顯示 X/Y/W/H）
@@ -67,8 +80,8 @@ uv run python main.py
   （已更新提示／維持提示／UNKNOWN 等待），卡住時先看這行
 - `debug/monitor.log` 記錄每次穩定觸發、重辨識結果與 Overlay 殘留重試，
   回報問題時請附上這段日誌
-- `F8` 全域快捷鍵：隨時顯示 / 隱藏 Overlay（只控制顯示，不操作遊戲；
-  監控中按 F8 隱藏後，迴圈不再自動顯示，直到下次手動「測試辨識」）
+- `F8`＝開始／停止監控（監控總開關，只控制提示流程，不操作遊戲）
+- 停止監控自動隱藏提示；「隱藏提示」手動關閉後，監控不會自動重秀，直到出現新提示或手動測試辨識
 
 ## Phase 7 說明
 
@@ -89,25 +102,30 @@ uv run pytest
 ```
 main.py                     # 進入點（DPI awareness + QApplication）
 core/
-    roi_model.py            # Roi 資料模型、驗證、邊界限制
-    settings_store.py       # 設定 JSON 儲存 / 載入
-    screen_capture.py       # mss 螢幕擷取（實體像素座標）
+    roi_model.py            # Roi（絕對）+ RoiFrac（視窗相對比例）+ IoU
+    settings_store.py       # 設定 JSON：視窗標題 / roi_frac / ui 偏好（舊 roi 自動遷移）
+    game_window.py          # 目標視窗綁定（精確標題＋可見＋最大）與客戶區
+    window_capture.py       # WGC 後台擷取會話＋單幀抓取（被蓋也活）
+    screen_capture.py       # mss 前景擷取（備援；框選背景、絕對座標 ROI 用）
     board_align.py          # 10×15 棋盤自動對齊（ROI Auto-Align）
     grid.py                 # ROI 固定切成 10×15（CellGeometry 含 center）
     board_state.py          # BoardState + CellState（DIGIT/EMPTY/UNKNOWN 三態分離）
     templates.py            # TemplateStore：1~9 模板讀寫（不管比對）
-    recognition.py          # DigitRecognizer：先 EMPTY、再 Template Matching、低信心 → UNKNOWN
+    recognition.py          # DigitRecognizer：白 tile 缺席 → EMPTY；否則模板比對
     board_builder.py        # ROI 畫面 → 切格 → 辨識 → BoardState
     solver.py               # Rectangle Solver：純演算法，BoardState → 全部合法矩形
     hint_selector.py        # Hint Selector：最小 area + 固定順序，只選唯一提示
     monitor.py              # 畫面穩定追蹤 + Hint Lock（不碰 GUI/擷取）
 gui/
-    main_window.py          # 主視窗（ROI 設定 / 自動校正 / 測試辨識 / 狀態）
-    roi_selector.py         # 全螢幕框選視窗（含自動對齊）
+    main_window.py          # 主視窗（綁定/框選/自動啟動/監控迴圈/置頂/F8）
+    roi_selector.py         # 全螢幕框選視窗（含自動對齊；背景可為後台幀）
     recognition_panel.py    # 10×15 辨識結果矩陣顯示
     hint_overlay.py         # 透明 Click-through Overlay（外框 + 起/終點，不吃滑鼠）
-    global_hotkey.py        # F8 全域快捷鍵（Win32 RegisterHotKey，只切換顯示）
+    global_hotkey.py        # F8 全域快捷鍵（Win32 RegisterHotKey，監控總開關）
     image_utils.py          # QImage ↔ numpy 轉換
+docs/
+    adr/                    # 架構決策記錄（後台抓圖、相對 ROI…）
+CONTEXT.md                  # 專案術語表（唯一推薦用語＋禁用詞）
 templates/
     1.png ... 9.png         # 真實遊戲畫面擷取的數字模板（tools/build_templates.py 建立）
 tools/
@@ -117,4 +135,4 @@ tests/                      # pytest 單元測試（含 solver vs 暴力參考�
 
 ### 座標系統
 
-全程使用**實體螢幕像素**：`main.py` 設定 Per-Monitor DPI awareness 並關閉 Qt High-DPI 縮放（`QT_ENABLE_HIGHDPI_SCALING=0`），確保 Qt 座標與 mss 擷取座標一致，後續 Overlay 也沿用同一座標系。
+管線全程使用**實體螢幕像素**：`main.py` 設定 Per-Monitor DPI awareness 並關閉 Qt High-DPI 縮放（`QT_ENABLE_HIGHDPI_SCALING=0`），確保 Qt 座標與擷取座標一致，後續 Overlay 也沿用同一座標系。設定檔存的是**視窗相對比例**（`roi_frac`），啟動／每 tick 以當下遊戲客戶區換算成絕對座標，因此搬窗／換解析度免重框。

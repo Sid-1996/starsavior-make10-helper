@@ -22,6 +22,27 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def _fake_window_layer(monkeypatch):
+    """隔離真實視窗與對話框（同 test_monitor_gui，避免測試卡住或碰到本機遊戲）。"""
+    from PyQt6.QtWidgets import QMessageBox
+
+    from core.game_window import WindowInfo
+    from gui.main_window import MainWindow
+
+    def fake_bind(self):
+        self._game = WindowInfo(hwnd=424242, left=0, top=0, width=1920, height=1080)
+        self._last_win_rect = (0, 0, 1920, 1080)
+        return True
+
+    monkeypatch.setattr(MainWindow, "_bind_window", fake_bind)
+    monkeypatch.setattr(MainWindow, "_live_window", lambda self: self._game)
+    monkeypatch.setattr(MainWindow, "_start_wgc", lambda self: setattr(self, "_wgc", None))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+
+
 class TestGlobalHotkey:
     def test_start_stop_lifecycle(self, qapp):
         calls: list = []
@@ -52,7 +73,10 @@ class TestHotkeyToggleWiring:
         from gui.main_window import MainWindow
 
         win = MainWindow(
-            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
         )
         win._apply_roi(Roi(x=0, y=0, width=450, height=300))
         cells = []
@@ -67,22 +91,35 @@ class TestHotkeyToggleWiring:
         win._show_board_hint(BoardState(cells=cells))
         return win
 
-    def test_f8_toggles_and_mutes(self, qapp, tmp_path):
+    def test_f8_toggles_monitoring(self, qapp, tmp_path):
         win = self._window_with_hint(qapp, tmp_path)
         assert win._overlay.isVisible()
-        win._on_hotkey_toggle()  # 第一下：隱藏 + 靜音
+        assert not win._monitor_timer.isActive()
+        win._on_hotkey_toggle()  # 第一下：開始監控（提示保留）
+        assert win._monitor_timer.isActive()
+        assert "監控中" in win.lbl_monitor.text()
+        assert win._overlay.isVisible()
+        win._on_hotkey_toggle()  # 第二下：停止監控（提示隱藏）
+        assert not win._monitor_timer.isActive()
+        assert not win._overlay.isVisible()
+        assert "停止" in win.lbl_monitor.text()
+        win.close()
+
+    def test_hide_button_mutes(self, qapp, tmp_path):
+        win = self._window_with_hint(qapp, tmp_path)
+        win.btn_hide_hint.click()
         assert not win._overlay.isVisible()
         assert win._overlay_muted is True
-        win._on_hotkey_toggle()  # 第二下：顯示回來 + 解除靜音
-        assert win._overlay.isVisible()
-        assert win._overlay_muted is False
         win.close()
 
     def test_f8_without_hint_is_noop(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
         win = MainWindow(
-            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
         )
         win._on_hotkey_toggle()
         assert win._overlay_muted is False

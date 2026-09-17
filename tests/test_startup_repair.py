@@ -1,20 +1,19 @@
-"""啟動 ROI 自動修復測試（offscreen；擷取與對齊皆以假函式替換）。"""
+"""啟動 ROI 自動修復測試（offscreen；後台幀與對齊皆以假函式替換）。"""
 
-import json
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 import pytest
 
 pytest.importorskip("PyQt6.QtWidgets")
 
-from PyQt6.QtGui import QImage  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-import core.screen_capture  # noqa: E402
-from core import board_align  # noqa: E402
-from core.roi_model import Roi  # noqa: E402
+from core import window_capture  # noqa: E402
+from core.game_window import WindowInfo  # noqa: E402
+from core.roi_model import Roi, RoiFrac  # noqa: E402
 from core.settings_store import SettingsStore  # noqa: E402
 
 
@@ -24,148 +23,215 @@ def qapp():
     yield app
 
 
-def _dummy_image() -> QImage:
-    return QImage(100, 100, QImage.Format.Format_RGB888)
+def _frame(width=1920, height=1080):
+    return np.zeros((height, width, 3), dtype=np.uint8)
 
 
-def _make_window(tmp_path, roi: Roi | None, monkeypatch, align_results):
-    """建 MainWindow（啟動修復開著）；align 依序回傳 align_results。"""
+def _window_with_frac(tmp_path, frac, win, monkeypatch, align_results, grabbed=True):
+    """建 MainWindow（不自動修復/啟動），手動塞視窗＋比例後跑修復。"""
     from gui.main_window import MainWindow
 
     store = SettingsStore(tmp_path / "settings.json")
-    if roi is not None:
-        store.save_roi(roi)
+    store.save_roi_frac(frac)
     monkeypatch.setattr(
-        core.screen_capture, "get_virtual_screen_geometry", lambda: (0, 0, 1920, 1080)
+        window_capture, "grab_one", lambda hwnd, timeout_sec=2.0: _frame() if grabbed else None
     )
-    monkeypatch.setattr(core.screen_capture, "capture_region", lambda *args: _dummy_image())
-    monkeypatch.setattr(core.screen_capture, "capture_virtual_screen", lambda: _dummy_image())
     calls = {"n": 0}
 
-    def fake_align(gray, rect, expand_ratio=0.0):
-        result = align_results[min(calls["n"], len(align_results) - 1)]
+    def fake_align(gray, rect, origin):
+        raw = align_results[min(calls["n"], len(align_results) - 1)]
         calls["n"] += 1
-        return result
+        if raw is None:
+            return None
+        return Roi(x=origin[0] + raw[0], y=origin[1] + raw[1], width=raw[2], height=raw[3])
 
-    monkeypatch.setattr(board_align, "align_to_board", fake_align)
-    return MainWindow(store=store, log_dir=tmp_path)
+    monkeypatch.setattr(MainWindow, "_align_to_roi", staticmethod(fake_align))
+    widget = MainWindow(auto_repair=False, auto_start=False, store=store, log_dir=tmp_path)
+    widget._game = win
+    widget._roi_frac = frac
+    widget._auto_repair_roi()
+    return widget
+
+
+WIN = WindowInfo(hwnd=4242, left=0, top=0, width=1920, height=1080)
+FRAC = RoiFrac(x=0.25, y=0.25, width=0.5, height=0.5)  # → (480,270,960,540)
+BOX = (480, 270, 960, 540)
 
 
 class TestAutoRepair:
-    def test_no_roi_skips_capture(self, qapp, tmp_path, monkeypatch):
-        def fail_capture(*args):
-            raise AssertionError("無 ROI 時不該擷取")
-
-        monkeypatch.setattr(core.screen_capture, "capture_virtual_screen", fail_capture)
+    def test_no_frac_or_window_skips_grab(self, qapp, tmp_path, monkeypatch):
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
-        assert win._roi is None
-        win.close()
+        def fail_grab(hwnd, timeout_sec=2.0):
+            raise AssertionError("無比例/無視窗時不該抓幀")
 
-    def test_neighborhood_hit_adopts_and_saves(self, qapp, tmp_path, monkeypatch):
-        saved = Roi(x=100, y=100, width=300, height=200)
-        # 附近找到 (5,5,300,200)（影像座標）→ 螢幕座標 (15,45,300,200)
-        win = _make_window(tmp_path, saved, monkeypatch, [(5, 5, 300, 200)])
-        assert win._roi == Roi(x=15, y=45, width=300, height=200)
+        monkeypatch.setattr(window_capture, "grab_one", fail_grab)
+        widget = MainWindow(
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
+        )
+        widget._auto_repair_roi()  # 無比例 → 直接返回
+        assert widget._roi is None
+        widget.close()
+
+    def test_aligned_box_is_quiet(self, qapp, tmp_path, monkeypatch):
+        widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [(480, 270, 960, 540)])
+        # IoU=1 > 0.9：沿用，無字樣
+        assert widget._roi is None  # 修復不碰 _roi（解析階段負責）
+        assert "自動對齊" not in widget.lbl_roi_status.text()
+        widget.close()
+
+    def test_misaligned_adopts_repair(self, qapp, tmp_path, monkeypatch):
+        import json
+
+        # 框內檢查 miss（None），放大找到 (500,300,960,540) → 尺寸合採用
+        widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [None, (500, 300, 960, 540)])
+        assert widget._roi_frac == RoiFrac.from_absolute(
+            Roi(x=500, y=300, width=960, height=540), 0, 0, 1920, 1080
+        )
         data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-        assert data["roi"] == {"x": 15, "y": 45, "width": 300, "height": 200}
-        assert "自動對齊" in win.lbl_roi_status.text()
-        win.close()
+        assert "roi_frac" in data
+        assert "自動對齊" in widget.lbl_roi_status.text()
+        widget.close()
 
-    def test_same_position_is_quiet(self, qapp, tmp_path, monkeypatch):
-        saved = Roi(x=100, y=100, width=300, height=200)
-        # left=10, top=40；回傳 (90,60,300,200) → 剛好等於 saved
-        win = _make_window(tmp_path, saved, monkeypatch, [(90, 60, 300, 200)])
-        assert win._roi == saved
-        assert "自動對齊" not in win.lbl_roi_status.text()
-        win.close()
+    def test_miss_keeps_and_notes(self, qapp, tmp_path, monkeypatch):
+        widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [None, None])
+        assert widget._roi_frac == FRAC
+        assert "未在畫面上找到棋盤" in widget.lbl_roi_status.text()
+        widget.close()
 
-    def test_fallback_fullscreen_hit(self, qapp, tmp_path, monkeypatch):
+    def test_bad_size_rejected(self, qapp, tmp_path, monkeypatch):
+        widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [None, (500, 300, 300, 200)])
+        assert widget._roi_frac == FRAC  # 尺寸差太多不敢認
+        widget.close()
+
+    def test_no_frame_keeps_quiet(self, qapp, tmp_path, monkeypatch):
+        widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [None], grabbed=False)
+        assert widget._roi_frac == FRAC
+        widget.close()
+
+
+class TestBindingResolveAutostart:
+    def _window(self, tmp_path, monkeypatch, game=None):
+        from core import game_window as gw_mod
         from gui.main_window import MainWindow
 
-        saved = Roi(x=100, y=100, width=300, height=200)
-        # 附近 miss，全螢幕找到同尺寸 → 辨識驗證通過 → 採用
-        monkeypatch.setattr(MainWindow, "_looks_like_board", lambda self, roi: True)
-        win = _make_window(tmp_path, saved, monkeypatch, [None, (500, 400, 300, 200)])
-        assert win._roi == Roi(x=500, y=400, width=300, height=200)
-        assert "自動對齊" in win.lbl_roi_status.text()
-        win.close()
-
-    def test_fallback_rejects_bad_size(self, qapp, tmp_path, monkeypatch):
-        from gui.main_window import MainWindow
-
-        saved = Roi(x=100, y=100, width=300, height=200)
-        monkeypatch.setattr(MainWindow, "_looks_like_board", lambda self, roi: True)
-        # 全螢幕找到尺寸差太多的 → 不敢認，沿用
-        win = _make_window(tmp_path, saved, monkeypatch, [None, (500, 400, 600, 200)])
-        assert win._roi == saved
-        win.close()
-
-    def test_fallback_rejects_failed_verification(self, qapp, tmp_path, monkeypatch):
-        from gui.main_window import MainWindow
-
-        saved = Roi(x=100, y=100, width=300, height=200)
-        monkeypatch.setattr(MainWindow, "_looks_like_board", lambda self, roi: False)
-        win = _make_window(tmp_path, saved, monkeypatch, [None, (500, 400, 300, 200)])
-        assert win._roi == saved
-        assert "未找到棋盤" in win.lbl_roi_status.text()
-        win.close()
-
-    def test_fallback_keeps_when_rejected(self, qapp, tmp_path, monkeypatch):
-        saved = Roi(x=100, y=100, width=300, height=200)
-        win = _make_window(tmp_path, saved, monkeypatch, [None, None])
-        assert win._roi == saved
-        assert "未找到棋盤" in win.lbl_roi_status.text()
-        win.close()
-
-    def test_capture_failure_keeps_roi(self, qapp, tmp_path, monkeypatch):
-        saved = Roi(x=100, y=100, width=300, height=200)
-        store = SettingsStore(tmp_path / "settings.json")
-        store.save_roi(saved)
-        monkeypatch.setattr(
-            core.screen_capture,
-            "capture_region",
-            lambda *args: (_ for _ in ()).throw(OSError("no screen")),
-        )
-        monkeypatch.setattr(
-            core.screen_capture,
-            "capture_virtual_screen",
-            lambda: (_ for _ in ()).throw(OSError("no screen")),
-        )
-        from gui.main_window import MainWindow
-
-        win = MainWindow(store=store, log_dir=tmp_path)
-        assert win._roi == saved
-        win.close()
-
-
-class TestLooksLikeBoard:
-    def _window(self, tmp_path):
-        from gui.main_window import MainWindow
-
+        monkeypatch.setattr(gw_mod, "find_game_window", lambda title="StarSavior": game)
         return MainWindow(
             auto_repair=False,
+            auto_start=False,
             store=SettingsStore(tmp_path / "settings.json"),
             log_dir=tmp_path,
         )
 
-    def test_real_board_passes(self, qapp, tmp_path, monkeypatch):
-        from test_monitor_gui import _compose_board
-
-        win = self._window(tmp_path)
-        board_image = _compose_board({(0, 0): 4, (0, 1): 6})
-        monkeypatch.setattr(core.screen_capture, "capture_region", lambda *args: board_image)
-        assert win._looks_like_board(Roi(x=0, y=0, width=930, height=620)) is True
+    def test_bind_missing_sets_note(self, qapp, tmp_path, monkeypatch):
+        win = self._window(tmp_path, monkeypatch, game=None)
+        assert win._bind_window() is False
+        assert "找不到" in win.lbl_roi_status.text()
         win.close()
 
-    def test_non_board_fails(self, qapp, tmp_path, monkeypatch):
+    def test_bind_success(self, qapp, tmp_path, monkeypatch):
+        win = self._window(tmp_path, monkeypatch, game=WIN)
+        assert win._bind_window() is True
+        assert win._game == WIN
+        win.close()
+
+    def test_resolve_frac_to_absolute(self, qapp, tmp_path, monkeypatch):
+        from core.roi_model import Roi
+
+        win = self._window(tmp_path, monkeypatch, game=WIN)
+        win._game = WIN
+        win._roi_frac = FRAC
+        assert win._resolve_roi() is True
+        assert win._roi == Roi(x=480, y=270, width=960, height=540)
+        win.close()
+
+    def test_resolve_migrates_legacy(self, qapp, tmp_path, monkeypatch):
+        import json
+
+        from core.roi_model import Roi
+
+        store = SettingsStore(tmp_path / "settings.json")
+        store.save_roi(Roi(x=480, y=270, width=960, height=540))
+        win = self._window(tmp_path, monkeypatch, game=WIN)
+        win._game = WIN
+        assert win._resolve_roi() is True
+        assert win._roi == Roi(x=480, y=270, width=960, height=540)
+        assert win._roi_frac is not None
+        data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+        assert "roi" not in data and "roi_frac" in data
+        win.close()
+
+    def test_resolve_without_roi_fails(self, qapp, tmp_path, monkeypatch):
+        win = self._window(tmp_path, monkeypatch, game=WIN)
+        win._game = WIN
+        assert win._resolve_roi() is False
+        assert "未設定" in win.lbl_roi_status.text()
+        win.close()
+
+    def test_autostart_when_ready(self, qapp, tmp_path, monkeypatch):
+        from gui.main_window import MainWindow
+
+        store = SettingsStore(tmp_path / "settings.json")
+        store.save_roi_frac(FRAC)
+        monkeypatch.setattr("core.game_window.find_game_window", lambda title="StarSavior": WIN)
+        monkeypatch.setattr(MainWindow, "_start_wgc", lambda self: setattr(self, "_wgc", None))
+        win = MainWindow(store=store, log_dir=tmp_path)  # auto flags 預設全開
+        try:
+            assert win._monitor_timer.isActive()
+            assert "監控中" in win.lbl_monitor.text()
+        finally:
+            win.close()
+
+    def test_no_autostart_without_window(self, qapp, tmp_path, monkeypatch):
+        from gui.main_window import MainWindow
+
+        store = SettingsStore(tmp_path / "settings.json")
+        store.save_roi_frac(FRAC)
+        monkeypatch.setattr("core.game_window.find_game_window", lambda title="StarSavior": None)
+        win = MainWindow(store=store, log_dir=tmp_path)
+        try:
+            assert not win._monitor_timer.isActive()
+            assert "找不到" in win.lbl_roi_status.text()
+        finally:
+            win.close()
+
+
+class TestTopmost:
+    def test_default_on_and_toggle_persists(self, qapp, tmp_path):
+        from PyQt6.QtCore import Qt
+
+        from gui.main_window import MainWindow
+
+        store = SettingsStore(tmp_path / "settings.json")
+        win = MainWindow(auto_repair=False, auto_start=False, store=store, log_dir=tmp_path)
+        assert win.chk_topmost.isChecked() is True
+        assert bool(win.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) is True
+        win.chk_topmost.setChecked(False)
+        assert store.load_always_on_top() is False
+        assert bool(win.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) is False
+        win.close()
+
+
+class TestSelectorBackground:
+    def test_background_from_window_frame(self, qapp, tmp_path, monkeypatch):
         import numpy as np
 
-        win = self._window(tmp_path)
-        noise = np.random.default_rng(42).integers(0, 256, size=(620, 930, 3), dtype=np.uint8)
-        height, width, _ = noise.shape
-        noisy = QImage(noise.data, width, height, width * 3, QImage.Format.Format_RGB888).copy()
-        monkeypatch.setattr(core.screen_capture, "capture_region", lambda *args: noisy)
-        assert win._looks_like_board(Roi(x=0, y=0, width=930, height=620)) is False
+        from core import window_capture as wc_mod
+        from gui.main_window import MainWindow
+
+        win = MainWindow(
+            auto_repair=False,
+            auto_start=False,
+            store=SettingsStore(tmp_path / "settings.json"),
+            log_dir=tmp_path,
+        )
+        win._game = WIN
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        monkeypatch.setattr(wc_mod, "grab_one", lambda hwnd, timeout_sec=3.0: frame)
+        background, origin = win._selector_background()
+        assert (background.width(), background.height()) == (1920, 1080)
+        assert origin == (0, 0)
         win.close()
