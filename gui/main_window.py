@@ -38,10 +38,14 @@ from PyQt6.QtWidgets import (
 
 from core import board_align, screen_capture
 from core.board_builder import build_board_state
+from core.grid import build_grid
+from core.hint_selector import Hint, select_hint
 from core.recognition import DigitRecognizer
 from core.roi_model import GRID_COLS, GRID_ROWS, Roi
 from core.settings_store import SettingsStore
+from core.solver import find_rectangles
 from core.templates import TemplateStore
+from gui.hint_overlay import HintOverlay
 from gui.image_utils import qimage_to_gray
 from gui.recognition_panel import RecognitionPanel
 from gui.roi_selector import RoiSelectorDialog
@@ -57,6 +61,7 @@ class MainWindow(QMainWindow):
         self._store = store if store is not None else SettingsStore()
         self._roi: Roi | None = self._store.load_roi()
         self._templates = TemplateStore().load_all()
+        self._overlay = HintOverlay()
         self._build_ui()
         self._sync_spinboxes()
         self._update_status()
@@ -93,6 +98,8 @@ class MainWindow(QMainWindow):
         self.btn_reselect = QPushButton("重新框選")
         self.btn_align = QPushButton("自動校正")
         self.btn_test = QPushButton("測試辨識")
+        self.btn_hide_hint = QPushButton("隱藏提示")
+        self.btn_hide_hint.setToolTip("隱藏 Overlay 提示（Overlay 本身不接收滑鼠，只能在這裡關）。")
         self.btn_start = QPushButton("開始監控")
         self.btn_stop = QPushButton("停止監控")
         self.btn_align.setToolTip(
@@ -109,6 +116,7 @@ class MainWindow(QMainWindow):
             self.btn_reselect,
             self.btn_align,
             self.btn_test,
+            self.btn_hide_hint,
             self.btn_start,
             self.btn_stop,
         ):
@@ -153,6 +161,7 @@ class MainWindow(QMainWindow):
         self.btn_reselect.clicked.connect(self._on_select_roi)
         self.btn_align.clicked.connect(self._on_auto_align)
         self.btn_test.clicked.connect(self._on_test_recognition)
+        self.btn_hide_hint.clicked.connect(self._overlay.hide_hint)
         self.spin_x.valueChanged.connect(self._on_spin_changed)
         self.spin_y.valueChanged.connect(self._on_spin_changed)
         self.spin_w.valueChanged.connect(self._on_spin_changed)
@@ -253,6 +262,9 @@ class MainWindow(QMainWindow):
         if self._roi is None or not self._roi.is_valid():
             QMessageBox.warning(self, "測試辨識", "請先設定辨識區域。")
             return
+        # 擷取前先隱藏 Overlay：不能把自己的提示框一起截進去污染辨識
+        self._overlay.hide_hint()
+        QApplication.processEvents()
         try:
             image = screen_capture.capture_roi(self._roi)
             gray = qimage_to_gray(image)
@@ -275,6 +287,40 @@ class MainWindow(QMainWindow):
                 self.recognition_panel._matrix_label.text()
                 + "\n\n※ 含 UNKNOWN：第一版不產生新的提示，可重新截圖/重新辨識。"
             )
+            return
+        try:
+            hint = self._show_board_hint(board)
+        except Exception:
+            self.recognition_panel.show_message(
+                self.recognition_panel._matrix_label.text()
+                + "\n\n提示計算失敗：\n"
+                + traceback.format_exc()
+            )
+            return
+        if hint is None:
+            self.recognition_panel.show_message(
+                self.recognition_panel._matrix_label.text() + "\n\n此盤面無合法矩形（總和=10）。"
+            )
+            return
+        rect = hint.rectangle
+        self.recognition_panel.show_message(
+            self.recognition_panel._matrix_label.text()
+            + f"\n\n已在 Overlay 顯示提示：({rect.row1},{rect.col1})→({rect.row2},{rect.col2})"
+            f" area={rect.area}（共 {hint.candidate_count} 個候選）。"
+            "可用「隱藏提示」關閉。"
+        )
+
+    def _show_board_hint(self, board):
+        """對無 UNKNOWN 的棋盤計算提示並顯示 Overlay；回傳 Hint（供測試直接呼叫）。"""
+        hint: Hint | None = select_hint(find_rectangles(board))
+        if hint is None or self._roi is None:
+            return None
+        self._overlay.show_hint(hint.rectangle, build_grid(self._roi))
+        return hint
+
+    def closeEvent(self, event) -> None:
+        self._overlay.hide_hint()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------ #
     # 手動微調

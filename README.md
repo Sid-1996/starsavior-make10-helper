@@ -8,7 +8,7 @@
 - [x] **Phase 2**：10×15 Grid + Cell State + Template Matching（含 1~9 完整模板）
 - [x] **Phase 3**：Rectangle Solver（純演算法，只吃 BoardState）
 - [x] **Phase 4**：Hint Selector（最小 area + 固定掃描順序，只回一個 Hint）
-- [ ] Phase 5：透明 Click-through Overlay
+- [x] **Phase 5**：透明 Click-through Overlay（外框 + 起點 + 終點）
 - [ ] Phase 6：畫面變化偵測
 - [ ] Phase 7：整合測試與 UX 修正
 
@@ -48,6 +48,13 @@ uv run python main.py
 - Solver 是純函式 `core/solver.py::find_rectangles(board)`；
   單獨測試：`uv run pytest tests/test_solver.py`
 
+## Phase 5 使用方式
+
+- 「**測試辨識**」成功且無 UNKNOWN 時，會自動計算提示並顯示透明 Overlay
+  （綠框＋綠起點＋青終點，標示建議的滑鼠拖曳起終格中心）
+- Overlay 不接收滑鼠、不搶焦點，關閉請按主視窗「**隱藏提示**」
+- 擷取前會自動隱藏 Overlay，避免框線污染辨識
+
 ## 測試
 
 ```powershell
@@ -74,6 +81,7 @@ gui/
     main_window.py          # 主視窗（ROI 設定 / 自動校正 / 測試辨識 / 狀態）
     roi_selector.py         # 全螢幕框選視窗（含自動對齊）
     recognition_panel.py    # 10×15 辨識結果矩陣顯示
+    hint_overlay.py         # 透明 Click-through Overlay（外框 + 起/終點，不吃滑鼠）
     image_utils.py          # QImage ↔ numpy 轉換
 templates/
     1.png ... 9.png         # 真實遊戲畫面擷取的數字模板（tools/build_templates.py 建立）
