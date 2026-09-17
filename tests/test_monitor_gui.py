@@ -95,20 +95,22 @@ def _compose_board(plant: dict[tuple[int, int], int]) -> "QImage":
 class TestMonitorButtons:
     def test_start_stop_lifecycle(self, qapp, tmp_path):
         win = _window(tmp_path)
-        assert win.btn_start.isEnabled() is True
-        assert win.btn_stop.isEnabled() is False
-        win.btn_start.click()
+        assert win.btn_toggle.isHidden() is False
+        assert win.btn_guide.isHidden() is True
+        assert win.btn_toggle.text() == "開始監控 (F8)"
+        assert "就緒" in win.lbl_status.text() or "找不到" in win.lbl_status.text()
+        win.btn_toggle.click()
         assert win._monitor_timer.isActive()
-        assert "監控中" in win.lbl_monitor.text()
-        assert win.btn_start.isEnabled() is False
-        assert win.btn_stop.isEnabled() is True
-        win.btn_stop.click()
+        assert "監控中" in win.lbl_status.text()
+        assert win.btn_toggle.text() == "停止監控 (F8)"
+        win.btn_toggle.click()
         assert not win._monitor_timer.isActive()
-        assert "停止" in win.lbl_monitor.text()
+        assert "就緒" in win.lbl_status.text()
+        assert win.btn_toggle.text() == "開始監控 (F8)"
         assert win._monitor is None
         win.close()
 
-    def test_start_without_roi_stays_stopped(self, qapp, tmp_path):
+    def test_start_without_roi_shows_guide(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
         win = MainWindow(
@@ -117,21 +119,24 @@ class TestMonitorButtons:
             store=SettingsStore(tmp_path / "settings.json"),
             log_dir=tmp_path,
         )
-        assert win.btn_start.isEnabled() is False
+        assert win._needs_setup is True
+        assert win.btn_toggle.isHidden() is True
+        assert win.btn_guide.isHidden() is False
+        assert "框選" in win.lbl_status.text()
         win.close()
 
 
 class TestMonitorTicks:
     def test_stable_frames_build_board_once(self, qapp, tmp_path, fake_capture, fast_settle):
         win = _window(tmp_path)
-        win.btn_start.click()
+        win.btn_toggle.click()
         for _ in range(3):
             win._on_monitor_tick()  # 連續 3 幀穩定 → 建盤一次
         assert win._monitor is not None
         assert win._monitor.board is not None
         assert len(win._monitor.board.cells) == 150
         assert win._monitor.hints == []  # 全 EMPTY：無候選
-        assert "停止" not in win.lbl_monitor.text()
+        assert "停止" not in win.lbl_status.text()
         # 之後相同幀不再重建（Hint Lock：board 物件保持同一）
         board_before = win._monitor.board
         win._on_monitor_tick()
@@ -146,7 +151,7 @@ class TestMonitorTicks:
             lambda roi: frames.pop(0) if frames else _solid(150, 100, 100),
         )
         win = _window(tmp_path)
-        win.btn_start.click()
+        win.btn_toggle.click()
         for _ in range(6):
             win._on_monitor_tick()
         # 亮度整體改變但語意同為全 EMPTY → hint 維持空，不報變化
@@ -186,7 +191,7 @@ class TestCleanCaptureRetry:
 
     def test_retries_until_clean(self, qapp, tmp_path, fast_settle, monkeypatch):
         win = self._pair_window(qapp, tmp_path)
-        win.btn_start.click()
+        win.btn_toggle.click()
         shapes = win._overlay.current_shapes
         assert len(shapes) >= 1
         calls: list = []
@@ -207,7 +212,7 @@ class TestCleanCaptureRetry:
 
     def test_exhausted_returns_none(self, qapp, tmp_path, fast_settle, monkeypatch):
         win = self._pair_window(qapp, tmp_path)
-        win.btn_start.click()
+        win.btn_toggle.click()
         shapes = win._overlay.current_shapes
         assert len(shapes) >= 1
         polluted = self._polluted(shapes[0])
@@ -219,7 +224,7 @@ class TestCleanCaptureRetry:
 
     def test_no_overlay_skips_check(self, qapp, tmp_path, fast_settle, monkeypatch):
         win = _window(tmp_path)
-        win.btn_start.click()
+        win.btn_toggle.click()
         calls: list = []
 
         def fake_capture(roi):
@@ -233,10 +238,10 @@ class TestCleanCaptureRetry:
 
     def test_status_and_log_trace_ticks(self, qapp, tmp_path, fake_capture, fast_settle):
         win = _window(tmp_path)
-        win.btn_start.click()
-        assert "監控中 #0" in win.lbl_monitor.text()
+        win.btn_toggle.click()
+        assert "監控中 #0" in win.lbl_status.text()
         win._on_monitor_tick()
-        assert "監控中 #1" in win.lbl_monitor.text()
+        assert "監控中 #1" in win.lbl_status.text()
         log_text = (tmp_path / "monitor.log").read_text(encoding="utf-8")
         assert "start roi=" in log_text
         win.close()
@@ -245,7 +250,7 @@ class TestCleanCaptureRetry:
         self, qapp, tmp_path, fake_capture, fast_settle
     ):
         win = _window(tmp_path)
-        win.btn_start.click()
+        win.btn_toggle.click()
         for _ in range(3):  # 穩定觸發重建（全 EMPTY 盤 → hint None）
             win._on_monitor_tick()
         assert (tmp_path / "last_stable.png").is_file()
@@ -273,7 +278,7 @@ class TestFullSimulation:
             log_dir=tmp_path,
         )
         win._apply_roi(Roi(x=0, y=0, width=930, height=620))
-        win.btn_start.click()
+        win.btn_toggle.click()
 
         for _ in range(3):
             win._on_monitor_tick()

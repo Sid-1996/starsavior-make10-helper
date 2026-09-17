@@ -126,10 +126,10 @@ class TestMainWindowWiring:
                     cells.append(Cell(row, column, CellState.EMPTY))
         return BoardState(cells=cells)
 
-    def test_overlay_created_and_hide_button(self, qapp, tmp_path):
+    def test_overlay_created_and_toggle(self, qapp, tmp_path):
         win = self._window_with_roi(qapp, tmp_path)
         assert isinstance(win._overlay, HintOverlay)
-        assert win.btn_hide_hint.text() == "隱藏提示"
+        assert win.btn_toggle.text() == "開始監控 (F8)"
         win.close()
 
     def test_show_board_hint_displays_and_hides(self, qapp, tmp_path):
@@ -140,7 +140,7 @@ class TestMainWindowWiring:
         assert win._overlay.isVisible()
         # 每格 30x30：第一格中心 (15,15)
         assert win._overlay.current_shapes[0].start == (15, 15)
-        win.btn_hide_hint.click()
+        win._on_stop_monitor()  # 停止監控連帶隱藏提示
         assert not win._overlay.isVisible()
         win.close()
 
@@ -178,8 +178,8 @@ class TestMainWindowWiring:
         image = QImage(150, 100, QImage.Format.Format_RGB888)
         image.fill(QColor(128, 128, 128))
         painter = QPainter(image)
-        paint_hint(painter, shapes_a.border, shapes_a.start, shapes_a.end, primary=False)
-        paint_hint(painter, shapes_b.border, shapes_b.start, shapes_b.end, primary=True)
+        paint_hint(painter, shapes_a.border, shapes_a.start, shapes_a.end, index=1)
+        paint_hint(painter, shapes_b.border, shapes_b.start, shapes_b.end, index=0)
         painter.end()
         assert image.pixelColor(15, 5) == QColor(128, 128, 128)  # A 框內部：背景
         assert image.pixelColor(15, 0) != QColor(128, 128, 128)  # A 框上緣：有線
@@ -225,7 +225,7 @@ class TestOverlayPresent:
         roi = Roi(x=0, y=0, width=150, height=100)
         assert overlay_present(image, shapes, roi, (0, 0)) is True
 
-    def test_detects_secondary_amber(self, qapp):
+    def test_detects_secondary_color(self, qapp):
         from PyQt6.QtGui import QPainter
 
         from gui.hint_overlay import overlay_present, paint_hint
@@ -234,7 +234,7 @@ class TestOverlayPresent:
         image = QImage(150, 100, QImage.Format.Format_RGB888)
         image.fill(QColor(128, 128, 128))
         painter = QPainter(image)
-        paint_hint(painter, shapes.border, shapes.start, shapes.end, primary=False)
+        paint_hint(painter, shapes.border, shapes.start, shapes.end, index=1)
         painter.end()
         roi = Roi(x=0, y=0, width=150, height=100)
         assert overlay_present(image, shapes, roi, (0, 0)) is True
@@ -257,3 +257,44 @@ class TestOverlayPresent:
         clean.fill(QColor(128, 128, 128))
         assert overlay_present(clean, shapes, roi, (0, 0)) is False
         assert overlay_present(QImage(), shapes, roi, (0, 0)) is False
+
+
+class TestHintPalette:
+    """10 色調色盤：互不相同、亮＋高飽和（棋盤白/灰/黑永不命中）、全部可被檢出。"""
+
+    def test_palette_covers_max_hints_and_unique(self):
+        from core.hint_selector import MAX_HINT_COUNT
+        from gui.hint_overlay import _HINT_PALETTE
+
+        assert len(_HINT_PALETTE) == MAX_HINT_COUNT
+        rgb = [(c.red(), c.green(), c.blue()) for c in _HINT_PALETTE]
+        assert len(set(rgb)) == MAX_HINT_COUNT
+
+    def test_board_colors_never_match(self):
+        from gui.hint_overlay import _is_overlay_pixel
+
+        for gray in (0, 60, 128, 200, 255):  # 黑→灰→白，棋盤會出現的色
+            assert _is_overlay_pixel(QColor(gray, gray, gray)) is False
+
+    def test_all_palette_colors_detected(self):
+        from gui.hint_overlay import _HINT_PALETTE, _is_overlay_pixel
+
+        for color in _HINT_PALETTE:
+            assert _is_overlay_pixel(color) is True
+
+    def test_every_index_paints_detectable_hint(self, qapp):
+        from PyQt6.QtGui import QPainter
+
+        from core.hint_selector import MAX_HINT_COUNT
+        from gui.hint_overlay import overlay_present, paint_hint
+
+        shapes = hint_shapes(Rectangle(0, 0, 0, 1, 10, 2, 0, 2), _grid())
+        roi = Roi(x=0, y=0, width=150, height=100)
+        for index in range(MAX_HINT_COUNT):
+            image = QImage(150, 100, QImage.Format.Format_RGB888)
+            image.fill(QColor(240, 240, 240))  # 近白 tile：最嚴苛的底
+            painter = QPainter(image)
+            paint_hint(painter, shapes.border, shapes.start, shapes.end, index=index)
+            painter.end()
+            assert overlay_present(image, shapes, roi, (0, 0)) is True
+            assert _alpha_sum(image) > 0  # 含徽章也有筆跡

@@ -97,22 +97,15 @@ class TestHotkeyToggleWiring:
         assert not win._monitor_timer.isActive()
         win._on_hotkey_toggle()  # 第一下：開始監控（提示保留）
         assert win._monitor_timer.isActive()
-        assert "監控中" in win.lbl_monitor.text()
+        assert "監控中" in win.lbl_status.text()
         assert win._overlay.isVisible()
         win._on_hotkey_toggle()  # 第二下：停止監控（提示隱藏）
         assert not win._monitor_timer.isActive()
         assert not win._overlay.isVisible()
-        assert "停止" in win.lbl_monitor.text()
+        assert "就緒" in win.lbl_status.text()
         win.close()
 
-    def test_hide_button_mutes(self, qapp, tmp_path):
-        win = self._window_with_hint(qapp, tmp_path)
-        win.btn_hide_hint.click()
-        assert not win._overlay.isVisible()
-        assert win._overlay_muted is True
-        win.close()
-
-    def test_f8_without_hint_is_noop(self, qapp, tmp_path):
+    def test_f8_without_roi_stays_idle(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
         win = MainWindow(
@@ -121,12 +114,13 @@ class TestHotkeyToggleWiring:
             store=SettingsStore(tmp_path / "settings.json"),
             log_dir=tmp_path,
         )
-        win._on_hotkey_toggle()
-        assert win._overlay_muted is False
+        win._on_hotkey_toggle()  # 無 ROI：警告後原地不動（不崩潰）
+        assert not win._monitor_timer.isActive()
         assert not win._overlay.isVisible()
+        assert win._needs_setup is True
         win.close()
 
-    def test_restore_respects_mute(self, qapp, tmp_path):
+    def test_restore_overlay_shows_hints(self, qapp, tmp_path):
         from core.hint_selector import Hint
         from core.monitor import BoardMonitor
         from core.solver import Rectangle
@@ -134,8 +128,7 @@ class TestHotkeyToggleWiring:
         win = self._window_with_hint(qapp, tmp_path)
         win._monitor = BoardMonitor()
         win._monitor.hints = [Hint(Rectangle(0, 0, 0, 1, 10, 2, 0, 2), 1)]
-        win._overlay_muted = True
         win._overlay.hide()
         win._restore_overlay()
-        assert not win._overlay.isVisible()
+        assert win._overlay.isVisible()
         win.close()

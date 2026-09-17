@@ -1,19 +1,10 @@
-"""主視窗：ROI 設定、辨識預覽與狀態顯示（Phase 1 + Phase 2）。
+"""主視窗：極簡——一行狀態＋監控開關＋提示數，其他全收進「設定…」。
 
-Phase 1：
-- 框選辨識區域（全螢幕選取器）
-- X / Y / Width / Height 手動微調
-- 設定儲存 / 載入
-- ROI 預覽（含 10x15 格線輔助對齊）
-
-Phase 2：
-- ROI 固定切成 10x15（grid.build_grid）
-- Cell 三態（board_state.CellState）+ BoardState
-- Template Matching（recognition.DigitRecognizer，模板來自 TemplateStore）
-- 「測試辨識」：擷取 ROI → 建立 BoardState → GUI 顯示 10x15 辨識矩陣
-
-「開始監控 / 停止監控」為 Phase 6+ 功能，
-目前僅保留 disabled 按鈕佔位，明確標示尚未實作。
+- 啟動只做「就緒」（綁遊戲視窗＋ROI 解析＋自動吸附），不自動進監控；
+  使用者按「開始監控」或 F8 才開始。
+- 從沒框選過 ROI 會進入引導模式：只顯示「框選辨識區域來開始」，
+  框完自動切回正常模式。
+- ROI 微調／框選／自動校正／預覽／辨識矩陣／置頂全在 SettingsDialog。
 """
 
 from __future__ import annotations
@@ -27,9 +18,6 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -55,10 +43,8 @@ from core.window_capture import WindowCaptureSession
 from gui.global_hotkey import GlobalHotkey
 from gui.hint_overlay import HintOverlay, overlay_present
 from gui.image_utils import qimage_to_gray
-from gui.recognition_panel import RecognitionPanel
 from gui.roi_selector import RoiSelectorDialog
-
-_PREVIEW_MIN_SIZE = (450, 300)
+from gui.settings_dialog import SettingsDialog
 
 
 class MainWindow(QMainWindow):
@@ -68,11 +54,11 @@ class MainWindow(QMainWindow):
         parent=None,
         log_dir: Path | None = None,
         auto_repair: bool = True,
-        auto_start: bool = True,
+        auto_start: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Star Savior 10 消除提示器")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(360)
         self._store = store if store is not None else SettingsStore()
         self._log_dir = (
             Path(log_dir)
@@ -88,27 +74,32 @@ class MainWindow(QMainWindow):
         self._last_win_rect: tuple[int, int, int, int] | None = None
         self._templates = TemplateStore().load_all()
         self._overlay = HintOverlay()
-        self._overlay_muted = False  # F8 隱藏後，監控迴圈不再自動顯示
         self._hotkey = GlobalHotkey(self._on_hotkey_toggle)
         self._monitor: BoardMonitor | None = None
         self._monitor_timer = QTimer(self)
         self._monitor_timer.setInterval(MonitorConfig.frame_interval_ms)
         self._monitor_timer.timeout.connect(self._on_monitor_tick)
+        self._settings = SettingsDialog(self)
+        self.recognition_panel = self._settings.recognition_panel  # 監控迴圈寫入用別名
         self._build_ui()
+        self._wire_settings()
         self._sync_spinboxes()
-        self._update_status()
         topmost = self._store.load_always_on_top()
-        self.chk_topmost.blockSignals(True)
-        self.chk_topmost.setChecked(topmost)
-        self.chk_topmost.blockSignals(False)
+        self._settings.chk_topmost.blockSignals(True)
+        self._settings.chk_topmost.setChecked(topmost)
+        self._settings.chk_topmost.blockSignals(False)
         self._apply_topmost(topmost)
         self.spin_hints.blockSignals(True)
         self.spin_hints.setValue(self._store.load_max_hints())
         self.spin_hints.blockSignals(False)
         if not self._hotkey.start():
-            self.btn_hide_hint.setToolTip(
-                "隱藏 Overlay 提示（F8 全域快捷鍵註冊失敗，只能用此按鈕）。"
+            self.btn_toggle.setToolTip(
+                "開始／停止監控（F8 全域快捷鍵註冊失敗，只能用此按鈕）。"
             )
+        self._needs_setup = not (
+            (self._roi is not None and self._roi.is_valid())
+            or (self._roi_frac is not None and self._roi_frac.is_valid())
+        )  # 絕對 ROI 或視窗相對比例任一有效＝設定過；兩者皆無才顯示引導
         if auto_repair or auto_start:
             window_ok = self._bind_window()
         else:
@@ -118,8 +109,9 @@ class MainWindow(QMainWindow):
             self._resolve_roi()
             self._auto_repair_roi()
         if auto_start and window_ok and self._resolve_roi():
-            # 偏好都記住了：直接進監控，零點擊
             self._on_start_monitor()
+        self._refresh_ui()
+        self._render_preview()
 
     # ------------------------------------------------------------------ #
     # UI 建構
@@ -129,119 +121,104 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # ---- 辨識區域群組 ----
-        roi_group = QGroupBox("辨識區域 (ROI)")
-        roi_layout = QGridLayout(roi_group)
+        # ---- 唯一的一行狀態：永遠白話一句 ----
+        self.lbl_status = QLabel("啟動中…")
+        self.lbl_status.setWordWrap(True)
+        root.addWidget(self.lbl_status)
 
-        self.spin_x = self._make_spin()
-        self.spin_y = self._make_spin()
-        self.spin_w = self._make_spin(min_value=0)
-        self.spin_h = self._make_spin(min_value=0)
-        for row, (name, spin) in enumerate(
-            (
-                ("X:", self.spin_x),
-                ("Y:", self.spin_y),
-                ("Width:", self.spin_w),
-                ("Height:", self.spin_h),
-            )
-        ):
-            roi_layout.addWidget(QLabel(name), row, 0)
-            roi_layout.addWidget(spin, row, 1)
+        # ---- 唯一的動作：監控開關（跟 F8 同義） ----
+        self.btn_toggle = QPushButton("開始監控 (F8)")
+        self.btn_toggle.setToolTip("開始／停止監控（F8 全域快捷鍵同義）。")
+        self.btn_toggle.setMinimumHeight(44)
+        root.addWidget(self.btn_toggle)
 
-        btn_box = QVBoxLayout()
-        self.btn_select = QPushButton("框選辨識區域")
-        self.btn_reselect = QPushButton("重新框選")
-        self.btn_align = QPushButton("自動校正")
-        self.btn_test = QPushButton("測試辨識")
-        self.btn_hide_hint = QPushButton("隱藏提示")
-        self.btn_hide_hint.setToolTip(
-            "隱藏 Overlay 提示（Overlay 本身不接收滑鼠，只能在這裡關；F8 也可切換）。"
+        # ---- 首次引導：沒框選過才出現，框完自動消失 ----
+        self.btn_guide = QPushButton("框選辨識區域來開始")
+        self.btn_guide.setToolTip(
+            "第一次使用：拖曳框住遊戲的 10 × 15 棋盤（Enter 確認、Esc 取消）。"
         )
-        self.chk_topmost = QCheckBox("主視窗置頂")
-        self.chk_topmost.setToolTip("單螢幕全螢幕遊戲時保持主視窗可操作；偏好會記住。")
+        self.btn_guide.setMinimumHeight(44)
+        root.addWidget(self.btn_guide)
+
+        # ---- 同時提示數 ----
+        self._hints_row = QWidget()
+        hints_row = QHBoxLayout(self._hints_row)
+        hints_row.setContentsMargins(0, 0, 0, 0)
+        hints_row.addWidget(QLabel("同時提示數："))
         self.spin_hints = QSpinBox()
         self.spin_hints.setRange(1, MAX_HINT_COUNT)
-        self.spin_hints.setToolTip("同時顯示幾組提示（首選＋備選）；偏好會記住。")
-        self.btn_start = QPushButton("開始監控")
-        self.btn_stop = QPushButton("停止監控")
-        self.btn_align.setToolTip(
-            "以即時畫面偵測 10×15 棋盤位置，自動微調目前的辨識區域。\n"
-            "使用時請確保遊戲畫面完整可見、未被遮擋。"
-        )
-        self.btn_test.setToolTip("擷取目前 ROI 並跑一次辨識，在下方顯示 10×15 結果。")
-        self.btn_start.setToolTip("開始監控：畫面變化 → 等待穩定 → 重新辨識 → 更新提示。")
-        self.btn_stop.setToolTip("停止監控並隱藏提示。")
-        for btn in (
-            self.btn_select,
-            self.btn_reselect,
-            self.btn_align,
-            self.btn_test,
-            self.btn_hide_hint,
-            self.btn_start,
-            self.btn_stop,
-        ):
-            btn_box.addWidget(btn)
-        btn_box.addWidget(self.chk_topmost)
-        hints_row = QHBoxLayout()
-        hints_row.addWidget(QLabel("同時提示數："))
+        self.spin_hints.setToolTip("同時顯示幾組提示（1 號是首選照著打，其餘是備選）；偏好會記住。")
         hints_row.addWidget(self.spin_hints)
         hints_row.addStretch(1)
-        btn_box.addLayout(hints_row)
-        roi_layout.addLayout(btn_box, 0, 2, 4, 1)
-        root.addWidget(roi_group)
+        root.addWidget(self._hints_row)
 
-        # ---- 預覽 ----
-        preview_group = QGroupBox("ROI 預覽（含 10 × 15 格線）")
-        preview_layout = QVBoxLayout(preview_group)
-        self.preview_label = QLabel("尚未設定辨識區域")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(*_PREVIEW_MIN_SIZE)
-        self.preview_label.setStyleSheet("background-color: #202020;")
-        preview_layout.addWidget(self.preview_label)
-        root.addWidget(preview_group)
-
-        # ---- 辨識結果預覽 ----
-        from gui.recognition_panel import make_group_box
-
-        self.recognition_panel = RecognitionPanel()
-        root.addWidget(make_group_box(self.recognition_panel))
-
-        # ---- 狀態群組 ----
-        status_group = QGroupBox("狀態")
-        status_layout = QVBoxLayout(status_group)
-        self.lbl_roi_status = QLabel("辨識區域：未設定")
-        self.lbl_board_size = QLabel(f"棋盤尺寸：{GRID_ROWS} × {GRID_COLS}")
-        self.lbl_cell_size = QLabel("Cell 大小：-")
-        self.lbl_monitor = QLabel("監控狀態：停止")
-        for lbl in (
-            self.lbl_roi_status,
-            self.lbl_board_size,
-            self.lbl_cell_size,
-            self.lbl_monitor,
-        ):
-            status_layout.addWidget(lbl)
-        root.addWidget(status_group)
+        self.btn_settings = QPushButton("設定…")
+        self.btn_settings.setToolTip("ROI 框選／微調／預覽、辨識矩陣、主視窗置頂。")
+        root.addWidget(self.btn_settings)
 
         # ---- 訊號 ----
-        self.btn_select.clicked.connect(self._on_select_roi)
-        self.btn_reselect.clicked.connect(self._on_select_roi)
-        self.btn_align.clicked.connect(self._on_auto_align)
-        self.btn_test.clicked.connect(self._on_test_recognition)
-        self.btn_hide_hint.clicked.connect(self._on_hide_hint)
-        self.btn_start.clicked.connect(self._on_start_monitor)
-        self.btn_stop.clicked.connect(self._on_stop_monitor)
-        self.chk_topmost.toggled.connect(self._on_topmost_toggled)
+        self.btn_toggle.clicked.connect(self._on_toggle_monitor)
+        self.btn_guide.clicked.connect(self._on_select_roi)
+        self.btn_settings.clicked.connect(self._open_settings)
         self.spin_hints.valueChanged.connect(self._on_hints_count_changed)
-        self.spin_x.valueChanged.connect(self._on_spin_changed)
-        self.spin_y.valueChanged.connect(self._on_spin_changed)
-        self.spin_w.valueChanged.connect(self._on_spin_changed)
-        self.spin_h.valueChanged.connect(self._on_spin_changed)
 
-    def _make_spin(self, min_value: int = -100000) -> QSpinBox:
-        spin = QSpinBox()
-        spin.setRange(min_value, 100000)
-        spin.setToolTip("可直接輸入數值微調，也可用上下鍵調整")
-        return spin
+    def _wire_settings(self) -> None:
+        """設定對話框的元件接到主視窗既有邏輯。"""
+        dlg = self._settings
+        dlg.btn_select.clicked.connect(self._on_select_roi)
+        dlg.btn_align.clicked.connect(self._on_auto_align)
+        dlg.chk_topmost.toggled.connect(self._on_topmost_toggled)
+        dlg.spin_x.valueChanged.connect(self._on_spin_changed)
+        dlg.spin_y.valueChanged.connect(self._on_spin_changed)
+        dlg.spin_w.valueChanged.connect(self._on_spin_changed)
+        dlg.spin_h.valueChanged.connect(self._on_spin_changed)
+
+    def _open_settings(self) -> None:
+        self._render_preview()
+        self._settings.show()
+        self._settings.raise_()
+        self._settings.activateWindow()
+
+    # ------------------------------------------------------------------ #
+    # 單一狀態列：監控中 > 引導 > 就緒／異常（永遠只顯示一行白話）
+    # ------------------------------------------------------------------ #
+    def _refresh_ui(self) -> None:
+        monitoring = self._monitor_timer.isActive()
+        if monitoring:
+            tracker_run = self._monitor.tracker.run_length if self._monitor else 0
+            required = self._monitor.config.stable_required if self._monitor else 0
+            note = f" · {self._monitor_note}" if self._monitor_note else ""
+            self.lbl_status.setText(
+                f"監控中 #{self._monitor_ticks} 穩定{tracker_run}/{required}{note}"
+            )
+            self.btn_toggle.setText("停止監控 (F8)")
+            self.btn_toggle.setEnabled(True)
+        elif self._needs_setup:
+            self.lbl_status.setText("歡迎使用：按下方按鈕框選遊戲的 10 × 15 棋盤來開始。")
+            self.btn_toggle.setVisible(False)
+            self._hints_row.setVisible(False)
+        else:
+            self.btn_toggle.setVisible(True)
+            self._hints_row.setVisible(True)
+            self.btn_toggle.setText("開始監控 (F8)")
+            roi_ok = self._roi is not None and self._roi.is_valid()
+            frac_ok = self._roi_frac is not None and self._roi_frac.is_valid()
+            if not roi_ok and not frac_ok:
+                self._needs_setup = True
+                self._refresh_ui()
+                return
+            if self._game is None:
+                self.lbl_status.setText(
+                    f"找不到「{self._store.load_window_title()}」視窗，"
+                    "請先開啟遊戲再按開始監控。"
+                )
+            else:
+                self.lbl_status.setText("就緒：按「開始監控」或 F8。")
+        self.btn_guide.setVisible(self._needs_setup and not monitoring)
+
+    def _note_status(self, suffix: str) -> None:
+        """在狀態列追加一次性說明（下次 _refresh_ui 會恢復正常文字）。"""
+        self.lbl_status.setText(self.lbl_status.text() + suffix)
 
     # ------------------------------------------------------------------ #
     # ROI 框選流程
@@ -306,6 +283,7 @@ class MainWindow(QMainWindow):
         if self._monitor_timer.isActive():
             self._on_stop_monitor()  # ROI 變更時先停監控，避免用舊基準比對
         self._roi = roi
+        self._needs_setup = False  # 框選完成：離開引導模式
         self._store.save_roi(roi)
         if self._game is not None:
             # 視窗已知：同步存一份比例（之後搬窗／換解析度自動跟著走）
@@ -319,34 +297,34 @@ class MainWindow(QMainWindow):
                 self._roi_frac = frac
                 self._store.save_roi_frac(frac)
         self._sync_spinboxes()
-        self._update_status()
+        self._refresh_ui()
         self._render_preview()
 
     # ------------------------------------------------------------------ #
     # 目標視窗綁定 + ROI 解析 + 偏好
     # ------------------------------------------------------------------ #
     def _bind_window(self) -> bool:
-        """綁定遊戲視窗；找不到時狀態列說明原因並回傳 False。"""
+        """綁定遊戲視窗；找不到回傳 False（狀態列由 _refresh_ui 統一說明）。"""
         title = self._store.load_window_title()
         info = game_window.find_game_window(title)
         if info is None or not info.is_valid():
             self._game = None
-            self.lbl_roi_status.setText(f"辨識區域：未綁定（找不到「{title}」視窗，請先開啟遊戲）")
             return False
         self._game = info
         self._last_win_rect = (info.left, info.top, info.width, info.height)
         return True
 
     def _resolve_roi(self) -> bool:
-        """比例→絕對座標（＋舊格式遷移）；失敗回傳 False。"""
+        """比例→絕對座標（＋舊格式遷移）；失敗回傳 False（狀態由 _refresh_ui 統一）。"""
         if self._roi_frac is not None and self._roi_frac.is_valid() and self._game is not None:
             roi = self._roi_frac.to_absolute(
                 self._game.left, self._game.top, self._game.width, self._game.height
             )
             if roi.is_valid():
                 self._roi = roi
+                self._needs_setup = False
                 self._sync_spinboxes()
-                self._update_status()
+                self._refresh_ui()
                 return True
             return False
         if self._game is not None:
@@ -368,7 +346,6 @@ class MainWindow(QMainWindow):
                     return self._resolve_roi()
         if self._roi is not None and self._roi.is_valid():
             return True  # 舊絕對座標沿用（僅供顯示；監控仍需綁定視窗）
-        self.lbl_roi_status.setText("辨識區域：未設定（請框選辨識區域）")
         return False
 
     def _apply_topmost(self, enabled: bool) -> None:
@@ -382,16 +359,16 @@ class MainWindow(QMainWindow):
     def _on_hints_count_changed(self, value: int) -> None:
         self._store.save_max_hints(value)
 
-    def _on_hide_hint(self) -> None:
-        self._overlay_muted = True
-        self._overlay.hide_hint()
-
-    def _on_hotkey_toggle(self) -> None:
-        """F8：監控總開關（開始／停止），只控制提示流程，不操作遊戲。"""
+    def _on_toggle_monitor(self) -> None:
+        """監控開關鈕：跟 F8 同義，只控制提示流程，不操作遊戲。"""
         if self._monitor_timer.isActive():
             self._on_stop_monitor()
         else:
             self._on_start_monitor()
+
+    def _on_hotkey_toggle(self) -> None:
+        """F8：監控總開關（開始／停止），只控制提示流程，不操作遊戲。"""
+        self._on_toggle_monitor()
 
     # ------------------------------------------------------------------ #
     # 自動校正
@@ -484,7 +461,7 @@ class MainWindow(QMainWindow):
         ey1 = min(frame_h, ly + lh + lh // 3)
         found = self._align_to_roi(gray, (ex0, ey0, ex1 - ex0, ey1 - ey0), (win.left, win.top))
         if found is None:
-            self._note_roi_status("（未在畫面上找到棋盤：若遊戲不在對戰畫面可忽略）")
+            self._note_status("（未在畫面上找到棋盤：若遊戲不在對戰畫面可忽略）")
             return
         if (
             abs(found.width - box.width) / box.width > 0.15
@@ -501,15 +478,11 @@ class MainWindow(QMainWindow):
         self._store.save_roi_frac(new_frac)
         self._roi = found
         self._sync_spinboxes()
-        self._update_status()
-        self._note_roi_status("（啟動時已自動對齊到新位置）")
-
-    def _note_roi_status(self, suffix: str) -> None:
-        """在狀態列追加一次性說明（下次 _update_status 會恢復正常文字）。"""
-        self.lbl_roi_status.setText(self.lbl_roi_status.text() + suffix)
+        self._refresh_ui()
+        self._note_status("（啟動時已自動對齊到新位置）")
 
     # ------------------------------------------------------------------ #
-    # 測試辨識（Phase 2）
+    # ROI 抓圖（設定對話框預覽用）+ 測試辨識已退役（連續監控取代）
     # ------------------------------------------------------------------ #
     def _grab_roi_bgr(self):
         """後台 ROI 的 BGR 影像；無視窗/無比例/抓不到幀回傳 None（呼叫端走前景備援）。"""
@@ -537,70 +510,12 @@ class MainWindow(QMainWindow):
             raise ValueError("未設定辨識區域")
         return screen_capture.capture_roi(self._roi)
 
-    def _on_test_recognition(self) -> None:
-        if self._roi is None or not self._roi.is_valid():
-            QMessageBox.warning(self, "測試辨識", "請先設定辨識區域。")
-            return
-        # 後台幀不可能含 Overlay；前景備援才需先隱藏
-        background = self._grab_roi_bgr()
-        if background is None:
-            self._overlay.hide_hint()
-            QApplication.processEvents()
-        try:
-            if background is not None:
-                gray = window_capture.to_grayscale(background)
-            else:
-                gray = qimage_to_gray(screen_capture.capture_roi(self._roi))
-        except Exception:  # 擷取或轉換失敗時以對話框呈現，避免程式直接中止
-            QMessageBox.critical(
-                self,
-                "測試辨識失敗",
-                "擷取或處理畫面時發生錯誤：\n" + traceback.format_exc(),
-            )
-            return
-        try:
-            recognizer = DigitRecognizer(self._templates)
-            board = build_board_state(gray, self._roi, recognizer)
-        except Exception:
-            self.recognition_panel.show_message("辨識過程發生錯誤：\n" + traceback.format_exc())
-            return
-        self.recognition_panel.show_board(board, self._templates.missing())
-        if board.has_unknown():
-            self.recognition_panel.show_message(
-                self.recognition_panel._matrix_label.text()
-                + "\n\n※ 含 UNKNOWN：第一版不產生新的提示，可重新截圖/重新辨識。"
-            )
-            return
-        try:
-            hints = self._show_board_hints(board)
-        except Exception:
-            self.recognition_panel.show_message(
-                self.recognition_panel._matrix_label.text()
-                + "\n\n提示計算失敗：\n"
-                + traceback.format_exc()
-            )
-            return
-        if not hints:
-            self.recognition_panel.show_message(
-                self.recognition_panel._matrix_label.text() + "\n\n此盤面無合法矩形（總和=10）。"
-            )
-            return
-        rect = hints[0].rectangle
-        extra = f"（另有 {len(hints) - 1} 個備選）" if len(hints) > 1 else ""
-        self.recognition_panel.show_message(
-            self.recognition_panel._matrix_label.text()
-            + f"\n\n已在 Overlay 顯示提示：({rect.row1},{rect.col1})→({rect.row2},{rect.col2})"
-            f" area={rect.area}（共 {hints[0].candidate_count} 個候選）{extra}。"
-            "可用「隱藏提示」關閉。"
-        )
-
     def _hint_limit(self) -> int:
         """同時顯示的提示數量（使用者偏好，存檔記住）。"""
         return self._store.load_max_hints()
 
     def _show_board_hints(self, board) -> list:
         """對無 UNKNOWN 的棋盤計算前 N 個提示並顯示 Overlay；回傳 Hint 列。"""
-        self._overlay_muted = False  # 使用者手動要求顯示，解除靜音
         hints = select_hints(find_rectangles(board), limit=self._hint_limit())
         if not hints or self._roi is None:
             return []
@@ -627,8 +542,7 @@ class MainWindow(QMainWindow):
         self._monitor_note = "啟動，等待穩定畫面"
         self._start_wgc()
         self._monitor_timer.start()
-        self._update_monitor_status()
-        self._update_status()
+        self._refresh_ui()
         self._monitor_log(f"start roi={self._roi} wgc={self._wgc is not None}")
 
     def _start_wgc(self) -> None:
@@ -714,13 +628,8 @@ class MainWindow(QMainWindow):
             if roi.is_valid():
                 self._roi = roi
                 self._sync_spinboxes()
-                self._update_status()
-        if (
-            self._monitor is not None
-            and self._monitor.hints
-            and self._roi is not None
-            and not self._overlay_muted
-        ):
+                self._refresh_ui()
+        if self._monitor is not None and self._monitor.hints and self._roi is not None:
             self._overlay.show_hints(
                 [hint.rectangle for hint in self._monitor.hints], build_grid(self._roi)
             )
@@ -729,10 +638,8 @@ class MainWindow(QMainWindow):
         self._monitor_timer.stop()
         self._stop_wgc()
         self._monitor = None
-        self._overlay_muted = False
         self._overlay.hide_hint()
-        self.lbl_monitor.setText("監控狀態：停止")
-        self._update_status()
+        self._refresh_ui()
         self._monitor_log("stop")
 
     def _monitor_log(self, message: str) -> None:
@@ -746,14 +653,6 @@ class MainWindow(QMainWindow):
                 log_file.write(f"{datetime.now():%H:%M:%S} {message}\n")
         except OSError:
             pass
-
-    def _update_monitor_status(self) -> None:
-        tracker_run = self._monitor.tracker.run_length if self._monitor else 0
-        required = self._monitor.config.stable_required if self._monitor else 0
-        note = f" · {self._monitor_note}" if self._monitor_note else ""
-        self.lbl_monitor.setText(
-            f"監控狀態：監控中 #{self._monitor_ticks} 穩定{tracker_run}/{required}{note}"
-        )
 
     def _capture_clean(self, shapes: list) -> object | None:
         """隱藏 Overlay 後擷取；殘留筆跡則重試（有上限，不無限等待）。
@@ -823,7 +722,7 @@ class MainWindow(QMainWindow):
             return
         if game_window.is_minimized(live.hwnd):
             self._monitor_note = "等待遊戲視窗（最小化中）"
-            self._update_monitor_status()
+            self._refresh_ui()
             return
         if self._wgc is not None:
             if self._wgc.closed:
@@ -833,7 +732,7 @@ class MainWindow(QMainWindow):
                 return
             if self._frame_is_stale():
                 self._monitor_note = "等待後台畫面更新…"
-                self._update_monitor_status()
+                self._refresh_ui()
                 return
         self._refresh_rect_and_overlay(live)
         try:
@@ -847,13 +746,13 @@ class MainWindow(QMainWindow):
             )
             return
         if not self._monitor.note_frame(frame):
-            self._update_monitor_status()
+            self._refresh_ui()
             return  # 無有效變化：保持目前 Hint（Hint Lock）
         ratio = self._monitor.tracker.last_ratio
         self._monitor_log(f"stable new frame tick={self._monitor_ticks} ratio={ratio:.4f}")
         self._dump_frame("last_stable.png", frame)
         self._monitor_note = "重辨識中…"
-        self._update_monitor_status()
+        self._refresh_ui()
         if self._wgc is not None:
             # 後台幀不可能含本工具 Overlay：直接辨識，無需隱藏重試
             self._dump_frame("last_clean.png", frame)
@@ -869,7 +768,7 @@ class MainWindow(QMainWindow):
                 color = self._capture_clean(shapes_before)
                 if color is None:  # 殘留消不掉：放棄本次重建，等下次變化
                     self._monitor_note = "維持提示（Overlay 未消失，跳過本次）"
-                    self._update_monitor_status()
+                    self._refresh_ui()
                     self._restore_overlay()
                     try:
                         self._monitor.rebaseline(self._grab_roi_gray())
@@ -893,9 +792,8 @@ class MainWindow(QMainWindow):
         snapshot = self._monitor.commit_board(board, max_hints=self._hint_limit())
         if snapshot.changed:
             self.recognition_panel.show_board(board, self._templates.missing())
-            if not snapshot.hints or self._overlay_muted:
-                if not self._overlay_muted:
-                    self._overlay.hide_hint()
+            if not snapshot.hints:
+                self._overlay.hide_hint()
             else:
                 assert self._roi is not None
                 self._overlay.show_hints(
@@ -911,7 +809,7 @@ class MainWindow(QMainWindow):
             self._monitor_log("keep hint (UNKNOWN)")
         else:
             self._monitor_note = "維持提示（棋盤未變）"
-        self._update_monitor_status()
+        self._refresh_ui()
         try:  # 吸收目前畫面（含 Overlay 像素），避免為自己的提示空轉
             self._monitor.rebaseline(self._grab_roi_gray())
         except Exception:
@@ -919,12 +817,7 @@ class MainWindow(QMainWindow):
 
     def _restore_overlay(self) -> None:
         """把隱藏前的提示顯示回來（乾淨擷取後的過渡，避免畫面閃爍太久）。"""
-        if (
-            not self._overlay_muted
-            and self._monitor is not None
-            and self._monitor.hints
-            and self._roi is not None
-        ):
+        if self._monitor is not None and self._monitor.hints and self._roi is not None:
             self._overlay.show_hints(
                 [hint.rectangle for hint in self._monitor.hints], build_grid(self._roi)
             )
@@ -935,69 +828,49 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     # ------------------------------------------------------------------ #
-    # 手動微調
+    # 手動微調（元件住在設定對話框）
     # ------------------------------------------------------------------ #
     def _on_spin_changed(self) -> None:
+        dlg = self._settings
         roi = Roi(
-            x=self.spin_x.value(),
-            y=self.spin_y.value(),
-            width=self.spin_w.value(),
-            height=self.spin_h.value(),
+            x=dlg.spin_x.value(),
+            y=dlg.spin_y.value(),
+            width=dlg.spin_w.value(),
+            height=dlg.spin_h.value(),
         )
         if roi.is_valid():
             self._roi = roi
+            self._needs_setup = False
             self._store.save_roi(roi)
         else:
             self._roi = None
-        self._update_status()
+        self._refresh_ui()
         self._render_preview()
 
     def _sync_spinboxes(self) -> None:
-        spins = (
-            (self.spin_x, self._roi.x if self._roi else 0),
-            (self.spin_y, self._roi.y if self._roi else 0),
-            (self.spin_w, self._roi.width if self._roi else 0),
-            (self.spin_h, self._roi.height if self._roi else 0),
-        )
-        for spin, value in spins:
-            spin.blockSignals(True)
-            spin.setValue(value)
-            spin.blockSignals(False)
-
-    # ------------------------------------------------------------------ #
-    # 狀態與預覽
-    # ------------------------------------------------------------------ #
-    def _update_status(self) -> None:
-        monitoring = self._monitor_timer.isActive()
-        if self._roi is not None and self._roi.is_valid():
-            r = self._roi
-            self.lbl_roi_status.setText(
-                f"辨識區域：已設定 (X={r.x}, Y={r.y}, W={r.width}, H={r.height})"
+        self._settings.sync_spinboxes(
+            (
+                self._roi.x if self._roi else 0,
+                self._roi.y if self._roi else 0,
+                self._roi.width if self._roi else 0,
+                self._roi.height if self._roi else 0,
             )
-            cell = r.cell_size()
-            assert cell is not None
-            self.lbl_cell_size.setText(f"Cell 大小：{cell[0]:.1f} × {cell[1]:.1f} px")
-            self.btn_align.setEnabled(True)
-            self.btn_test.setEnabled(True)
-            self.btn_start.setEnabled(not monitoring)
-        else:
-            self.lbl_roi_status.setText("辨識區域：未設定")
-            self.lbl_cell_size.setText("Cell 大小：-")
-            self.btn_align.setEnabled(False)
-            self.btn_test.setEnabled(False)
-            self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(monitoring)
+        )
 
+    # ------------------------------------------------------------------ #
+    # 預覽（畫進設定對話框；對話框沒開也無害）
+    # ------------------------------------------------------------------ #
     def _render_preview(self) -> None:
+        label = self._settings.preview_label
         if self._roi is None or not self._roi.is_valid():
-            self.preview_label.setPixmap(QPixmap())
-            self.preview_label.setText("尚未設定辨識區域")
+            label.setPixmap(QPixmap())
+            label.setText("尚未設定辨識區域")
             return
         try:
             image = self._grab_roi_image()
         except Exception as exc:  # ROI 落在螢幕外或擷取環境異常時不中斷 UI
-            self.preview_label.setPixmap(QPixmap())
-            self.preview_label.setText(f"預覽失敗：{exc}")
+            label.setPixmap(QPixmap())
+            label.setText(f"預覽失敗：{exc}")
             return
 
         painter = QPainter(image)
@@ -1015,8 +888,8 @@ class MainWindow(QMainWindow):
         painter.end()
 
         pixmap = QPixmap.fromImage(image).scaled(
-            self.preview_label.size(),
+            label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.preview_label.setPixmap(pixmap)
+        label.setPixmap(pixmap)

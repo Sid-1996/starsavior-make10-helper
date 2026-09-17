@@ -1,9 +1,11 @@
-"""透明 Click-through Overlay：顯示前 N 個推薦矩形的外框 + 起點 + 終點。
+"""透明 Click-through Overlay：顯示前 N 個推薦矩形的外框 + 起點 + 終點 + 編號。
 
 - 透明、置頂、不接收滑鼠（WindowTransparentForInput）、不搶焦點
   （WindowDoesNotAcceptFocus + ShowWithoutActivating）、工作列無圖示（Tool）。
 - 第 1 個是首選（亮綠粗框＋大圓點，照著打），第 2..N 個是備選
-  （琥珀色細框＋小圓點）；不顯示文字、不送出任何滑鼠事件、不操作遊戲。
+  （各用不同的高飽和色，細框＋小圓點）；每個框左上角有編號徽章
+  （黑底白字 1..N），重疊時靠「顏色＋編號」雙重區分；不送出任何
+  滑鼠事件、不操作遊戲。
 - 座標沿用實體螢幕像素（與 ROI / Grid 同一座標系）；Overlay 佔滿整個
   虛擬桌面，繪製時再平移。
 - Overlay 繪製層與 Screen Capture 必須分離：前景擷取前務必先隱藏 Overlay，
@@ -19,16 +21,36 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from core.grid import CellGeometry
+from core.hint_selector import MAX_HINT_COUNT
 from core.solver import Rectangle
 
-_BORDER_WIDTH = 3
-_DOT_RADIUS = 7
+_PRIMARY_BORDER_WIDTH = 4
+_PRIMARY_DOT_RADIUS = 7
 _SECONDARY_BORDER_WIDTH = 2
 _SECONDARY_DOT_RADIUS = 5
+_BADGE_RADIUS = 12
+
+# 提示調色盤：第 i 個提示用第 i 個顏色（0＝首選亮綠）。
+# 全部是「亮＋高飽和」色：棋盤只有白/灰/黑，_is_overlay_pixel 永遠不會誤判。
+_HINT_PALETTE: tuple[QColor, ...] = (
+    QColor(0, 255, 0),  # 1 首選：亮綠
+    QColor(0, 229, 255),  # 2 青
+    QColor(255, 214, 0),  # 3 黃
+    QColor(255, 61, 255),  # 4 洋紅
+    QColor(255, 145, 0),  # 5 橘
+    QColor(255, 70, 70),  # 6 紅
+    QColor(77, 140, 255),  # 7 藍
+    QColor(170, 110, 255),  # 8 紫
+    QColor(255, 110, 180),  # 9 粉
+    QColor(0, 255, 180),  # 10 碧綠
+)
+assert len(_HINT_PALETTE) == MAX_HINT_COUNT, "調色盤數量必須覆蓋 MAX_HINT_COUNT"
+
+_PRIMARY_END_COLOR = QColor(0, 255, 255)  # 首選終點：青色圓點（維持舊外觀）
 
 
 @dataclass(frozen=True)
@@ -41,15 +63,14 @@ class HintShapes:
 
 
 def _is_overlay_pixel(color) -> bool:
-    """是否為 Overlay 筆跡（亮綠首選框或琥珀備選框；棋盤白/灰/黑不會命中）。"""
-    green = color.green() >= 200 and color.green() - color.red() >= 120
-    amber = (
-        color.red() >= 200
-        and color.green() >= 140
-        and color.blue() <= 120
-        and color.red() - color.blue() >= 100
-    )
-    return green or amber
+    """是否為 Overlay 筆跡（調色盤任一色＋舊琥珀殘留；棋盤白/灰/黑不會命中）。
+
+    通用規則：最亮通道 >= 200 且三通道極差 >= 100（亮＋高飽和）。
+    白 tile（三通道皆亮但無飽和）、灰/黑（不夠亮）永遠不會命中。
+    """
+    brightest = max(color.red(), color.green(), color.blue())
+    dimmest = min(color.red(), color.green(), color.blue())
+    return brightest >= 200 and brightest - dimmest >= 100
 
 
 def overlay_present(
@@ -60,8 +81,8 @@ def overlay_present(
 ) -> bool:
     """檢查 ROI 截圖裡是否還殘留 Overlay 筆跡（乾淨重辨識前的驗證）。
 
-    沿外框四邊中點 + 起終點共 6 個採樣點，找 Overlay 專用的亮綠/亮青
-    （G>=200 且 G-R>=120；遊戲棋盤本身只有白/灰/黑，不會有這種顏色）。
+    沿外框四邊中點 + 起終點共 6 個採樣點，找 Overlay 專用的亮色高飽和
+    筆跡（遊戲棋盤本身只有白/灰/黑，不會有這種顏色）。
     至少 2 點命中才算存在，避免抗鋸齒邊緣誤判。image 為 ROI 裁圖。
     """
     if not isinstance(image, QImage) or image.isNull():
@@ -92,22 +113,22 @@ def paint_hint(
     border: tuple[float, float, float, float],
     start: tuple[float, float],
     end: tuple[float, float],
-    primary: bool = True,
+    index: int = 0,
 ) -> None:
-    """把外框 + 起終點畫到任意 QPainter（widget 座標）；供測試直接打到 QImage。
+    """把外框 + 起終點 + 編號徽章畫到任意 QPainter（widget 座標）；供測試直接打到 QImage。
 
-    primary=True 是首選（亮綠粗框大圓點），False 是備選（琥珀細框小圓點）。
+    index=0 是首選（亮綠粗框大圓點），index>=1 是備選（調色盤色細框小圓點）。
+    徽章數字 = index + 1（1-based，人類視角）。
     """
     x0, y0, x1, y1 = border
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    if primary:
-        main_color = QColor(0, 255, 0, 255)
-        end_color = QColor(0, 255, 255, 255)
-        border_width = _BORDER_WIDTH
-        dot_radius = _DOT_RADIUS
+    main_color = _HINT_PALETTE[index % len(_HINT_PALETTE)]
+    if index == 0:
+        end_color = _PRIMARY_END_COLOR
+        border_width = _PRIMARY_BORDER_WIDTH
+        dot_radius = _PRIMARY_DOT_RADIUS
     else:
-        main_color = QColor(255, 176, 0, 255)
-        end_color = QColor(255, 176, 0, 255)
+        end_color = main_color
         border_width = _SECONDARY_BORDER_WIDTH
         dot_radius = _SECONDARY_DOT_RADIUS
     # 外框：只描邊不填充（brush 必須每次重設 NoBrush，否則圓點的實心 brush
@@ -142,6 +163,21 @@ def paint_hint(
                 2 * dot_radius,
             )
         )
+    # 編號徽章：左上角黑底圓＋調色盤填色＋白字（重疊時靠顏色＋編號區分）
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(0, 0, 0, 220))
+    painter.drawEllipse(
+        QRectF(x0 - _BADGE_RADIUS - 1, y0 - _BADGE_RADIUS - 1, 2 * (_BADGE_RADIUS + 1), 2 * (_BADGE_RADIUS + 1))
+    )
+    painter.setBrush(main_color)
+    painter.drawEllipse(QRectF(x0 - _BADGE_RADIUS, y0 - _BADGE_RADIUS, 2 * _BADGE_RADIUS, 2 * _BADGE_RADIUS))
+    painter.setPen(QColor(255, 255, 255))
+    painter.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+    painter.drawText(
+        QRectF(x0 - _BADGE_RADIUS, y0 - _BADGE_RADIUS, 2 * _BADGE_RADIUS, 2 * _BADGE_RADIUS),
+        Qt.AlignmentFlag.AlignCenter,
+        str(index + 1),
+    )
 
 
 def hint_shapes(rectangle: Rectangle, geometries: Sequence[CellGeometry]) -> HintShapes:
@@ -241,9 +277,9 @@ class HintOverlay(QWidget):
         if not self._shapes:
             return
         painter = QPainter(self)
-        # 備選先畫，首選最後畫（壓在上層）
-        for shapes in self._shapes[1:]:
+        # 備選先畫，首選最後畫（壓在上層）；index 決定顏色＋徽章編號
+        for index, shapes in enumerate(self._shapes[1:], start=1):
             border, start, end = self._to_local(shapes)
-            paint_hint(painter, border, start, end, primary=False)
+            paint_hint(painter, border, start, end, index=index)
         border, start, end = self._to_local(self._shapes[0])
-        paint_hint(painter, border, start, end, primary=True)
+        paint_hint(painter, border, start, end, index=0)

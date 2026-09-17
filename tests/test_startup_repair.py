@@ -80,7 +80,7 @@ class TestAutoRepair:
         widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [(480, 270, 960, 540)])
         # IoU=1 > 0.9：沿用，無字樣
         assert widget._roi is None  # 修復不碰 _roi（解析階段負責）
-        assert "自動對齊" not in widget.lbl_roi_status.text()
+        assert "自動對齊" not in widget.lbl_status.text()
         widget.close()
 
     def test_misaligned_adopts_repair(self, qapp, tmp_path, monkeypatch):
@@ -93,13 +93,13 @@ class TestAutoRepair:
         )
         data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
         assert "roi_frac" in data
-        assert "自動對齊" in widget.lbl_roi_status.text()
+        assert "自動對齊" in widget.lbl_status.text()
         widget.close()
 
     def test_miss_keeps_and_notes(self, qapp, tmp_path, monkeypatch):
         widget = _window_with_frac(tmp_path, FRAC, WIN, monkeypatch, [None, None])
         assert widget._roi_frac == FRAC
-        assert "未在畫面上找到棋盤" in widget.lbl_roi_status.text()
+        assert "未在畫面上找到棋盤" in widget.lbl_status.text()
         widget.close()
 
     def test_bad_size_rejected(self, qapp, tmp_path, monkeypatch):
@@ -129,7 +129,7 @@ class TestBindingResolveAutostart:
     def test_bind_missing_sets_note(self, qapp, tmp_path, monkeypatch):
         win = self._window(tmp_path, monkeypatch, game=None)
         assert win._bind_window() is False
-        assert "找不到" in win.lbl_roi_status.text()
+        assert win._game is None
         win.close()
 
     def test_bind_success(self, qapp, tmp_path, monkeypatch):
@@ -168,20 +168,34 @@ class TestBindingResolveAutostart:
         win = self._window(tmp_path, monkeypatch, game=WIN)
         win._game = WIN
         assert win._resolve_roi() is False
-        assert "未設定" in win.lbl_roi_status.text()
+        assert "框選" in win.lbl_status.text()  # 引導模式請使用者框選
         win.close()
 
-    def test_autostart_when_ready(self, qapp, tmp_path, monkeypatch):
+    def test_ready_not_monitoring_by_default(self, qapp, tmp_path, monkeypatch):
         from gui.main_window import MainWindow
 
         store = SettingsStore(tmp_path / "settings.json")
         store.save_roi_frac(FRAC)
         monkeypatch.setattr("core.game_window.find_game_window", lambda title="StarSavior": WIN)
         monkeypatch.setattr(MainWindow, "_start_wgc", lambda self: setattr(self, "_wgc", None))
-        win = MainWindow(store=store, log_dir=tmp_path)  # auto flags 預設全開
+        win = MainWindow(store=store, log_dir=tmp_path)  # 預設：就緒但不監控
+        try:
+            assert not win._monitor_timer.isActive()
+            assert "就緒" in win.lbl_status.text()
+        finally:
+            win.close()
+
+    def test_autostart_opt_in_still_works(self, qapp, tmp_path, monkeypatch):
+        from gui.main_window import MainWindow
+
+        store = SettingsStore(tmp_path / "settings.json")
+        store.save_roi_frac(FRAC)
+        monkeypatch.setattr("core.game_window.find_game_window", lambda title="StarSavior": WIN)
+        monkeypatch.setattr(MainWindow, "_start_wgc", lambda self: setattr(self, "_wgc", None))
+        win = MainWindow(auto_start=True, store=store, log_dir=tmp_path)
         try:
             assert win._monitor_timer.isActive()
-            assert "監控中" in win.lbl_monitor.text()
+            assert "監控中" in win.lbl_status.text()
         finally:
             win.close()
 
@@ -194,25 +208,9 @@ class TestBindingResolveAutostart:
         win = MainWindow(store=store, log_dir=tmp_path)
         try:
             assert not win._monitor_timer.isActive()
-            assert "找不到" in win.lbl_roi_status.text()
+            assert "找不到" in win.lbl_status.text()
         finally:
             win.close()
-
-
-class TestTopmost:
-    def test_default_on_and_toggle_persists(self, qapp, tmp_path):
-        from PyQt6.QtCore import Qt
-
-        from gui.main_window import MainWindow
-
-        store = SettingsStore(tmp_path / "settings.json")
-        win = MainWindow(auto_repair=False, auto_start=False, store=store, log_dir=tmp_path)
-        assert win.chk_topmost.isChecked() is True
-        assert bool(win.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) is True
-        win.chk_topmost.setChecked(False)
-        assert store.load_always_on_top() is False
-        assert bool(win.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) is False
-        win.close()
 
 
 class TestSelectorBackground:
