@@ -9,7 +9,7 @@
 - [x] **Phase 3**：Rectangle Solver（純演算法，只吃 BoardState）
 - [x] **Phase 4**：Hint Selector（最小 area + 固定掃描順序，只回一個 Hint）
 - [x] **Phase 5**：透明 Click-through Overlay（外框 + 起點 + 終點）
-- [ ] Phase 6：畫面變化偵測
+- [x] **Phase 6**：畫面變化偵測（穩定等待 + Hint Lock + 穩定後重辨識）
 - [ ] Phase 7：整合測試與 UX 修正
 
 ## 環境需求
@@ -55,6 +55,13 @@ uv run python main.py
 - Overlay 不接收滑鼠、不搶焦點，關閉請按主視窗「**隱藏提示**」
 - 擷取前會自動隱藏 Overlay，避免框線污染辨識
 
+## Phase 6 使用方式
+
+- 按「**開始監控**」：每 300ms 比對 ROI 畫面，連續 3 幀穩定且與基準不同
+  才重辨識（消除動畫中間幀會被跳過）；棋盤真正變化才更新 Overlay
+  （Hint Lock），否則保持原提示
+- 「**停止監控**」：停止迴圈並隱藏提示；變更 ROI 會自動先停止監控
+
 ## 測試
 
 ```powershell
@@ -77,6 +84,7 @@ core/
     board_builder.py        # ROI 畫面 → 切格 → 辨識 → BoardState
     solver.py               # Rectangle Solver：純演算法，BoardState → 全部合法矩形
     hint_selector.py        # Hint Selector：最小 area + 固定順序，只選唯一提示
+    monitor.py              # 畫面穩定追蹤 + Hint Lock（不碰 GUI/擷取）
 gui/
     main_window.py          # 主視窗（ROI 設定 / 自動校正 / 測試辨識 / 狀態）
     roi_selector.py         # 全螢幕框選視窗（含自動對齊）

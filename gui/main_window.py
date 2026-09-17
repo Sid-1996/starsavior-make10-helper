@@ -21,7 +21,7 @@ from __future__ import annotations
 import time
 import traceback
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,6 +40,7 @@ from core import board_align, screen_capture
 from core.board_builder import build_board_state
 from core.grid import build_grid
 from core.hint_selector import Hint, select_hint
+from core.monitor import BoardMonitor, MonitorConfig
 from core.recognition import DigitRecognizer
 from core.roi_model import GRID_COLS, GRID_ROWS, Roi
 from core.settings_store import SettingsStore
@@ -62,6 +63,10 @@ class MainWindow(QMainWindow):
         self._roi: Roi | None = self._store.load_roi()
         self._templates = TemplateStore().load_all()
         self._overlay = HintOverlay()
+        self._monitor: BoardMonitor | None = None
+        self._monitor_timer = QTimer(self)
+        self._monitor_timer.setInterval(MonitorConfig.frame_interval_ms)
+        self._monitor_timer.timeout.connect(self._on_monitor_tick)
         self._build_ui()
         self._sync_spinboxes()
         self._update_status()
@@ -107,10 +112,8 @@ class MainWindow(QMainWindow):
             "使用時請確保遊戲畫面完整可見、未被遮擋。"
         )
         self.btn_test.setToolTip("擷取目前 ROI 並跑一次辨識，在下方顯示 10×15 結果。")
-        self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(False)
-        self.btn_start.setToolTip("Phase 6+ 實作")
-        self.btn_stop.setToolTip("Phase 6+ 實作")
+        self.btn_start.setToolTip("開始監控：畫面變化 → 等待穩定 → 重新辨識 → 更新提示。")
+        self.btn_stop.setToolTip("停止監控並隱藏提示。")
         for btn in (
             self.btn_select,
             self.btn_reselect,
@@ -162,6 +165,8 @@ class MainWindow(QMainWindow):
         self.btn_align.clicked.connect(self._on_auto_align)
         self.btn_test.clicked.connect(self._on_test_recognition)
         self.btn_hide_hint.clicked.connect(self._overlay.hide_hint)
+        self.btn_start.clicked.connect(self._on_start_monitor)
+        self.btn_stop.clicked.connect(self._on_stop_monitor)
         self.spin_x.valueChanged.connect(self._on_spin_changed)
         self.spin_y.valueChanged.connect(self._on_spin_changed)
         self.spin_w.valueChanged.connect(self._on_spin_changed)
@@ -206,6 +211,8 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _apply_roi(self, roi: Roi) -> None:
+        if self._monitor_timer.isActive():
+            self._on_stop_monitor()  # ROI 變更時先停監控，避免用舊基準比對
         self._roi = roi
         self._store.save_roi(roi)
         self._sync_spinboxes()
@@ -318,8 +325,77 @@ class MainWindow(QMainWindow):
         self._overlay.show_hint(hint.rectangle, build_grid(self._roi))
         return hint
 
-    def closeEvent(self, event) -> None:
+    # ------------------------------------------------------------------ #
+    # 監控迴圈（Phase 6）：畫面變化 → 等待穩定 → 乾淨重辨識 → Hint Lock
+    # ------------------------------------------------------------------ #
+    def _on_start_monitor(self) -> None:
+        if self._roi is None or not self._roi.is_valid():
+            QMessageBox.warning(self, "開始監控", "請先設定辨識區域。")
+            return
+        self._monitor = BoardMonitor()
+        self._monitor_timer.start()
+        self.lbl_monitor.setText("監控狀態：監控中")
+        self._update_status()
+
+    def _on_stop_monitor(self) -> None:
+        self._monitor_timer.stop()
+        self._monitor = None
         self._overlay.hide_hint()
+        self.lbl_monitor.setText("監控狀態：停止")
+        self._update_status()
+
+    def _on_monitor_tick(self) -> None:
+        if self._monitor is None or self._roi is None or not self._roi.is_valid():
+            return
+        try:
+            frame = qimage_to_gray(screen_capture.capture_roi(self._roi))
+        except Exception:  # 擷取失敗就停下來讓使用者處理，不無聲空轉
+            self._on_stop_monitor()
+            QMessageBox.critical(
+                self,
+                "監控失敗",
+                "擷取畫面時發生錯誤，已停止監控：\n" + traceback.format_exc(),
+            )
+            return
+        if not self._monitor.note_frame(frame):
+            return  # 無有效變化：保持目前 Hint（Hint Lock）
+        # 穩定新畫面 → 隱藏 Overlay 後稍候，乾淨重辨識（框線不可入鏡）
+        config = self._monitor.config
+        self._overlay.hide_hint()
+        QApplication.processEvents()
+        time.sleep(config.settle_delay_sec)
+        try:
+            clean = qimage_to_gray(screen_capture.capture_roi(self._roi))
+            board = build_board_state(clean, self._roi, DigitRecognizer(self._templates))
+        except Exception:
+            self._on_stop_monitor()
+            QMessageBox.critical(
+                self,
+                "監控失敗",
+                "重新辨識時發生錯誤，已停止監控：\n" + traceback.format_exc(),
+            )
+            return
+        self._restore_overlay()
+        snapshot = self._monitor.commit_board(board)
+        if snapshot.changed:
+            self.recognition_panel.show_board(board, self._templates.missing())
+            if snapshot.hint is None:
+                self._overlay.hide_hint()
+            else:
+                assert self._roi is not None
+                self._overlay.show_hint(snapshot.hint.rectangle, build_grid(self._roi))
+        try:  # 吸收目前畫面（含 Overlay 像素），避免為自己的提示空轉
+            self._monitor.rebaseline(qimage_to_gray(screen_capture.capture_roi(self._roi)))
+        except Exception:
+            pass
+
+    def _restore_overlay(self) -> None:
+        """把隱藏前的提示顯示回來（乾淨擷取後的過渡，避免畫面閃爍太久）。"""
+        if self._monitor is not None and self._monitor.hint is not None and self._roi is not None:
+            self._overlay.show_hint(self._monitor.hint.rectangle, build_grid(self._roi))
+
+    def closeEvent(self, event) -> None:
+        self._on_stop_monitor()
         super().closeEvent(event)
 
     # ------------------------------------------------------------------ #
@@ -356,6 +432,7 @@ class MainWindow(QMainWindow):
     # 狀態與預覽
     # ------------------------------------------------------------------ #
     def _update_status(self) -> None:
+        monitoring = self._monitor_timer.isActive()
         if self._roi is not None and self._roi.is_valid():
             r = self._roi
             self.lbl_roi_status.setText(
@@ -366,11 +443,14 @@ class MainWindow(QMainWindow):
             self.lbl_cell_size.setText(f"Cell 大小：{cell[0]:.1f} × {cell[1]:.1f} px")
             self.btn_align.setEnabled(True)
             self.btn_test.setEnabled(True)
+            self.btn_start.setEnabled(not monitoring)
         else:
             self.lbl_roi_status.setText("辨識區域：未設定")
             self.lbl_cell_size.setText("Cell 大小：-")
             self.btn_align.setEnabled(False)
             self.btn_test.setEnabled(False)
+            self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(monitoring)
 
     def _render_preview(self) -> None:
         if self._roi is None or not self._roi.is_valid():
