@@ -148,5 +148,5 @@ class BoardMonitor:
         if self.board is not None and board_key(board) == board_key(self.board):
             return MonitorSnapshot(rebuilt=False, changed=False, board=self.board, hints=self.hints)
         self.board = board
-        self.hints = select_hints(find_rectangles(board), limit=max_hints)
+        self.hints = select_hints(find_rectangles(board), limit=max_hints, board=board)
         return MonitorSnapshot(rebuilt=True, changed=True, board=self.board, hints=self.hints)

@@ -516,7 +516,7 @@ class MainWindow(QMainWindow):
 
     def _show_board_hints(self, board) -> list:
         """對無 UNKNOWN 的棋盤計算前 N 個提示並顯示 Overlay；回傳 Hint 列。"""
-        hints = select_hints(find_rectangles(board), limit=self._hint_limit())
+        hints = select_hints(find_rectangles(board), limit=self._hint_limit(), board=board)
         if not hints or self._roi is None:
             return []
         self._overlay.show_hints([hint.rectangle for hint in hints], build_grid(self._roi))

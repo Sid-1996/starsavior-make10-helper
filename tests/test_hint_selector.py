@@ -107,3 +107,56 @@ class TestSelectorWithSolver:
     def test_solver_to_hint_none_when_no_candidate(self):
         board = self._board({(0, 0): 5})
         assert select_hint(find_rectangles(board)) is None
+
+
+class TestDedupeSameDigits:
+    """同組數字去重：大小不同但框住同一組數字 → 只留最小一個，往後補滿。"""
+
+    def _board(self, digits: dict[tuple[int, int], int]) -> BoardState:
+        cells = []
+        for row in range(10):
+            for column in range(15):
+                if (row, column) in digits:
+                    cells.append(
+                        Cell(
+                            row=row,
+                            column=column,
+                            state=CellState.DIGIT,
+                            digit=digits[(row, column)],
+                        )
+                    )
+                else:
+                    cells.append(Cell(row=row, column=column, state=CellState.EMPTY))
+        return BoardState(cells=cells)
+
+    def test_same_digits_collapse_to_one(self):
+        # 只有 4+6 兩格：所有合法矩形都框同一組數字（差在 EMPTY 留白）
+        board = self._board({(0, 0): 4, (0, 1): 6})
+        candidates = find_rectangles(board)
+        assert len(candidates) > 1  # 去重有意義：候選確實很多
+        hints = select_hints(candidates, limit=5, board=board)
+        assert len(hints) == 1
+        assert hints[0].rectangle.area == 2  # 留最小的
+        assert hints[0].candidate_count == len(candidates)
+
+    def test_no_board_keeps_legacy_behavior(self):
+        board = self._board({(0, 0): 4, (0, 1): 6})
+        candidates = find_rectangles(board)
+        hints = select_hints(candidates, limit=5)  # 不傳 board：純面積截斷
+        assert len(hints) == min(5, len(candidates))
+
+    def test_partial_overlap_kept(self):
+        # 兩組不同數字 4+6 / 1+9：走法真的不同，兩組最小框都要留
+        board = self._board({(0, 0): 4, (0, 1): 6, (5, 5): 1, (5, 6): 9})
+        hints = select_hints(find_rectangles(board), limit=5, board=board)
+        rects = {(h.rectangle.row1, h.rectangle.col1, h.rectangle.row2, h.rectangle.col2) for h in hints}
+        assert (0, 0, 0, 1) in rects
+        assert (5, 5, 5, 6) in rects
+        # 同組內的留白變體不可出現：每個提示的數字集合互不為子集
+        from core.hint_selector import _digit_cells
+
+        sets = [_digit_cells(h.rectangle, board) for h in hints]
+        for i, one in enumerate(sets):
+            for j, other in enumerate(sets):
+                if i != j:
+                    assert not one <= other
