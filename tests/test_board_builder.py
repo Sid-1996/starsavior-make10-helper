@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from core.board_builder import build_board_state, cut_cells, estimate_panel_mean
+from core.board_builder import build_board_state, cut_cells
 from core.board_state import CellState
 from core.recognition import DigitRecognizer
 from core.roi_model import Roi
@@ -39,16 +39,6 @@ class TestCutCells:
         except ValueError:
             return
         raise AssertionError("應拒絕非灰階影像")
-
-
-class TestEstimatePanelMean:
-    def test_median_of_centers(self):
-        images = [np.full((20, 20), 60, dtype=np.uint8) for _ in range(100)]
-        images.extend(np.full((20, 20), 200, dtype=np.uint8) for _ in range(50))
-        assert estimate_panel_mean(images) == 60.0
-
-    def test_empty_list(self):
-        assert estimate_panel_mean([]) == 0.0
 
 
 class TestBuildBoardState:

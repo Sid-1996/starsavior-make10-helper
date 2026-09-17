@@ -6,13 +6,11 @@
     灰階全 ROI
       ↓ grid.build_grid + CellGeometry.crop_box 切 150 格
     150 張 cell 小圖
-      ↓ recognition.DigitRecognizer（先 EMPTY、再 Template Matching）
+      ↓ recognition.DigitRecognizer（白 tile 缺席 → EMPTY；否則 Template Matching）
     BoardState（DIGIT / EMPTY / UNKNOWN 三態分離）
 
 Builder 自己不擷取螢幕：呼叫端傳入灰階 ROI 畫面即可，
 方便測試用固定截圖重現。
-面板底色（panel_mean）從「所有 cell 中位數亮度」估計：
-已消除的空格占多數時，中位數接近面板底色。
 """
 
 from __future__ import annotations
@@ -23,27 +21,6 @@ from core.board_state import BoardState, Cell, CellState
 from core.grid import build_grid
 from core.recognition import DigitRecognizer
 from core.roi_model import Roi
-
-
-def estimate_panel_mean(cell_images: list[np.ndarray]) -> float:
-    """用所有 cell 中央小塊亮度的中位數估計面板底色。
-
-    已消除的空格通常是多數（或至少接近一半）時，中位數會落在面板底色；
-    若棋盤幾乎全滿（中位數落在數字上），呼叫端不該把 EMPTY 當成確定答案——
-    DigitRecognizer 會因為平均亮度偏離 panel_mean 而回 UNKNOWN，這是刻意設計。
-    """
-    means: list[float] = []
-    for image in cell_images:
-        height, width = image.shape[:2]
-        # 取中央 1/2 區域，避開 tile 圓角與格線
-        x0, x1 = width // 4, width * 3 // 4
-        y0, y1 = height // 4, height * 3 // 4
-        center = image[y0:y1, x0:x1]
-        if center.size:
-            means.append(float(center.mean()))
-    if not means:
-        return 0.0
-    return float(np.median(means))
 
 
 def cut_cells(roi_image: np.ndarray, roi: Roi) -> list[np.ndarray]:
@@ -77,11 +54,10 @@ def build_board_state(
 ) -> BoardState:
     """從灰階 ROI 畫面建立 BoardState。"""
     images = cut_cells(roi_image, roi)
-    panel_mean = estimate_panel_mean(images)
     board = BoardState.all_unknown()
     for index, image in enumerate(images):
         row, column = divmod(index, 15)
-        result = recognizer.recognize(image, panel_mean=panel_mean)
+        result = recognizer.recognize(image)
         if result.state == "digit":
             assert result.digit is not None
             board.cells[index] = Cell(

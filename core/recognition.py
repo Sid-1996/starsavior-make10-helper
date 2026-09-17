@@ -2,10 +2,18 @@
 
 流程（先 EMPTY、再 Template Matching；不用 OCR 猜空白）：
 1. cell 畫面縮放到 TEMPLATE_SIZE
-2. 先判斷是否為 EMPTY（與面板底色的差異夠小 → EMPTY）
+2. 先判斷是否為 EMPTY（白 tile 缺席 → EMPTY，見 _is_empty）
 3. 有內容 → 對 1~9 模板做 normalized cross-correlation
 4. 最高分 < threshold → UNKNOWN（不要硬猜）
 5. 缺模板 → UNKNOWN
+
+EMPTY 判定原理（實機量測）：
+- 有數字 = 白 tile（亮部占比 ~0.5，黑字對比 std ~70）
+- 已消除 = 深色 tile 洞（均值 ~97）或面板花紋（均值 ~120），亮部占比 = 0
+- 因此「亮部占比低 + 對比不高」即 EMPTY；不再用面板均值推估
+  （舊法在滿盤時把面板均值估成白 tile 亮度，導致消除格永遠判 UNKNOWN）。
+- 輕微變暗的數字（std 仍高）不會被判 EMPTY，會進入 Template Matching
+  （歸一化相關對線性亮度變化不敏感）；假設螢幕亮度恆定（與模板同機擷取）。
 
 回傳 RecognitionResult，呼叫端（BoardBuilder）負責寫入 BoardState。
 辨識器不讀螢幕、不碰 GUI。
@@ -21,8 +29,9 @@ import numpy as np
 from core.templates import DIGITS, TEMPLATE_SIZE, TemplateSet
 
 DEFAULT_MATCH_THRESHOLD = 0.75  # 最高分低於此 → UNKNOWN
-DEFAULT_EMPTY_STD = 8.0  # cell 灰階標準差低於此 → EMPTY（接近素色面板）
-DEFAULT_EMPTY_MEAN_MARGIN = 25.0  # 與面板底色平均值差異小於此 → EMPTY
+DEFAULT_BRIGHT_LEVEL = 200.0  # 高於此亮度視為白 tile 像素
+DEFAULT_BRIGHT_FRACTION = 0.15  # 亮部占比低於此 → 可能 EMPTY（數字格約 0.5）
+DEFAULT_CONTENT_STD = 20.0  # 標準差高於此 → 有內容（數字格約 65+），不判 EMPTY
 
 
 @dataclass(frozen=True)
@@ -42,28 +51,25 @@ class DigitRecognizer:
         self,
         templates: TemplateSet,
         match_threshold: float = DEFAULT_MATCH_THRESHOLD,
-        empty_std: float = DEFAULT_EMPTY_STD,
-        empty_mean_margin: float = DEFAULT_EMPTY_MEAN_MARGIN,
+        bright_level: float = DEFAULT_BRIGHT_LEVEL,
+        bright_fraction: float = DEFAULT_BRIGHT_FRACTION,
+        content_std: float = DEFAULT_CONTENT_STD,
     ) -> None:
         self.templates = templates
         self.match_threshold = match_threshold
-        self.empty_std = empty_std
-        self.empty_mean_margin = empty_mean_margin
+        self.bright_level = bright_level
+        self.bright_fraction = bright_fraction
+        self.content_std = content_std
 
-    def recognize(
-        self, cell_image: np.ndarray, panel_mean: float | None = None
-    ) -> RecognitionResult:
-        """辨識單一 cell（灰階 uint8，任意尺寸）。
-
-        panel_mean: 面板底色的灰階平均值（EMPTY 參考）；沒給就只用標準差判斷。
-        """
+    def recognize(self, cell_image: np.ndarray) -> RecognitionResult:
+        """辨識單一 cell（灰階 uint8，任意尺寸）。"""
         if cell_image.ndim != 2 or cell_image.dtype != np.uint8:
             raise ValueError("cell_image 必須是 2D uint8 灰階影像")
         if cell_image.size == 0:
             return RecognitionResult(state="unknown", digit=None, confidence=0.0, scores={})
         normalized = self._normalize(cell_image)
 
-        if self._is_empty(normalized, panel_mean):
+        if self._is_empty(normalized):
             return RecognitionResult(state="empty", digit=None, confidence=0.0, scores={})
         if not self.templates.is_complete() and not self.templates.templates:
             # 完全沒有模板：不要硬猜，直接 UNKNOWN
@@ -87,15 +93,12 @@ class DigitRecognizer:
             return cell_image
         return cv2.resize(cell_image, TEMPLATE_SIZE, interpolation=cv2.INTER_AREA)
 
-    def _is_empty(self, normalized: np.ndarray, panel_mean: float | None) -> bool:
-        # 素色面板：標準差很小，且平均亮度接近面板底色
-        if float(normalized.std()) >= self.empty_std:
+    def _is_empty(self, normalized: np.ndarray) -> bool:
+        # 沒有白 tile（亮部占比低）且對比不高 → 已消除的空格。
+        # 對比高的一律視為有內容（交給 Template Matching 判斷，避免把變暗的數字判 EMPTY）。
+        if float((normalized >= self.bright_level).mean()) >= self.bright_fraction:
             return False
-        if panel_mean is None:
-            # 沒有面板參考時：低對比可能是數字的一部分，不要硬判 EMPTY
-            return False
-        # 再確認平均亮度接近面板底色（避免把整片白/整片黑的異常當 EMPTY）
-        return abs(float(normalized.mean()) - panel_mean) < self.empty_mean_margin
+        return float(normalized.std()) < self.content_std
 
     def _match_all(self, normalized: np.ndarray) -> dict[int, float]:
         scores: dict[int, float] = {}
