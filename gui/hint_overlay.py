@@ -110,7 +110,9 @@ def paint_hint(
         end_color = QColor(255, 176, 0, 255)
         border_width = _SECONDARY_BORDER_WIDTH
         dot_radius = _SECONDARY_DOT_RADIUS
-    # 外框：先畫黑底襯線確保在白色 tile 上可見，再畫主線
+    # 外框：只描邊不填充（brush 必須每次重設 NoBrush，否則圓點的實心 brush
+    # 會洩漏到下一個框的 drawRect造成填滿蓋字）；黑襯線打底確保白色 tile 可見
+    painter.setBrush(Qt.BrushStyle.NoBrush)
     for color, width in (
         (QColor(0, 0, 0, 220), border_width + 3),
         (main_color, border_width),

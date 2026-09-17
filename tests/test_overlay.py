@@ -167,6 +167,24 @@ class TestMainWindowWiring:
         assert SettingsStore(tmp_path / "settings.json").load_max_hints() == 3
         win.close()
 
+    def test_boxes_never_filled(self, qapp):
+        """回歸：多框共用 painter 時 brush 不可洩漏，框內必須是背景（數字不能被蓋掉）。"""
+        from PyQt6.QtGui import QPainter
+
+        from gui.hint_overlay import paint_hint
+
+        shapes_a = hint_shapes(Rectangle(0, 0, 2, 2, 10, 2, 7, 9), _grid())
+        shapes_b = hint_shapes(Rectangle(5, 5, 7, 7, 10, 2, 7, 9), _grid())
+        image = QImage(150, 100, QImage.Format.Format_RGB888)
+        image.fill(QColor(128, 128, 128))
+        painter = QPainter(image)
+        paint_hint(painter, shapes_a.border, shapes_a.start, shapes_a.end, primary=False)
+        paint_hint(painter, shapes_b.border, shapes_b.start, shapes_b.end, primary=True)
+        painter.end()
+        assert image.pixelColor(15, 5) == QColor(128, 128, 128)  # A 框內部：背景
+        assert image.pixelColor(15, 0) != QColor(128, 128, 128)  # A 框上緣：有線
+        assert image.pixelColor(65, 60) == QColor(128, 128, 128)  # B 框內部：背景
+
     def test_paint_hint_draws_to_image(self, qapp):
         # 不經 QWidget.render（offscreen 會崩潰）：直接把 paint_hint 打到 QImage 驗證
         from PyQt6.QtGui import QPainter
