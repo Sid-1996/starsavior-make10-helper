@@ -5,8 +5,8 @@
 ## 開發進度
 
 - [x] **Phase 1**：ROI 框選 + 設定儲存
-- [ ] Phase 2：10×15 Grid + Cell State + Template Matching
-- [ ] Phase 3：Rectangle Solver
+- [x] **Phase 2**：10×15 Grid + Cell State + Template Matching（含 1~9 完整模板）
+- [x] **Phase 3**：Rectangle Solver（純演算法，只吃 BoardState）
 - [ ] Phase 4：Hint Selector
 - [ ] Phase 5：透明 Click-through Overlay
 - [ ] Phase 6：畫面變化偵測
@@ -40,6 +40,14 @@ uv run python main.py
 6. ROI 會自動儲存在專案根目錄 `settings.json`，下次啟動自動載入
 7. 預覽區會顯示框選結果與 10 × 15 格線，協助確認對齊
 
+## Phase 2 / 3 使用方式
+
+- 主視窗「**測試辨識**」：擷取 ROI → 建立 BoardState → 顯示 10×15 辨識矩陣
+- 重建數字模板：`uv run python tools/build_templates.py <遊戲截圖> <標註JSON>`
+ （標註格式 `{"row,col": digit}`；ROI 預設讀 `settings.json`）
+- Solver 是純函式 `core/solver.py::find_rectangles(board)`；
+  單獨測試：`uv run pytest tests/test_solver.py`
+
 ## 測試
 
 ```powershell
@@ -55,11 +63,22 @@ core/
     settings_store.py       # 設定 JSON 儲存 / 載入
     screen_capture.py       # mss 螢幕擷取（實體像素座標）
     board_align.py          # 10×15 棋盤自動對齊（ROI Auto-Align）
+    grid.py                 # ROI 固定切成 10×15（CellGeometry 含 center）
+    board_state.py          # BoardState + CellState（DIGIT/EMPTY/UNKNOWN 三態分離）
+    templates.py            # TemplateStore：1~9 模板讀寫（不管比對）
+    recognition.py          # DigitRecognizer：先 EMPTY、再 Template Matching、低信心 → UNKNOWN
+    board_builder.py        # ROI 畫面 → 切格 → 辨識 → BoardState
+    solver.py               # Rectangle Solver：純演算法，BoardState → 全部合法矩形
 gui/
-    main_window.py          # 主視窗（ROI 設定 / 自動校正 / 預覽 / 狀態）
+    main_window.py          # 主視窗（ROI 設定 / 自動校正 / 測試辨識 / 狀態）
     roi_selector.py         # 全螢幕框選視窗（含自動對齊）
+    recognition_panel.py    # 10×15 辨識結果矩陣顯示
     image_utils.py          # QImage ↔ numpy 轉換
-tests/                      # pytest 單元測試
+templates/
+    1.png ... 9.png         # 真實遊戲畫面擷取的數字模板（tools/build_templates.py 建立）
+tools/
+    build_templates.py      # 從遊戲截圖 + 標註 JSON 建立/更新模板
+tests/                      # pytest 單元測試（含 solver vs 暴力參考實作比對）
 ```
 
 ### 座標系統

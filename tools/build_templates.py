@@ -36,7 +36,16 @@ def build_templates_from_labels(
     image = cv2.imread(str(screenshot_path), cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise FileNotFoundError(f"讀不到截圖：{screenshot_path}")
-    cells = cut_cells(image, roi)
+    # screenshot 是全螢幕截圖：先裁出 ROI 再切格。
+    # cut_cells 吃的是「ROI 原點」的畫面，直接餵全圖會切錯位置。
+    height, width = image.shape[:2]
+    x0 = max(0, min(roi.x, width))
+    y0 = max(0, min(roi.y, height))
+    x1 = max(0, min(roi.x + roi.width, width))
+    y1 = max(0, min(roi.y + roi.height, height))
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(f"ROI {roi} 超出截圖範圍 {width}x{height}")
+    cells = cut_cells(image[y0:y1, x0:x1], roi)
     store = TemplateStore(templates_dir)
     saved: list[Path] = []
     for (row, column), digit in sorted(labels.items()):
