@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         store: SettingsStore | None = None,
         parent=None,
         log_dir: Path | None = None,
+        auto_repair: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Star Savior 10 消除提示器")
@@ -91,6 +92,9 @@ class MainWindow(QMainWindow):
             self.btn_hide_hint.setToolTip(
                 "隱藏 Overlay 提示（F8 全域快捷鍵註冊失敗，只能用此按鈕）。"
             )
+        if auto_repair:
+            # 遊戲視窗若移動，啟動時自動吸附（找不到就沿用舊設定）
+            self._auto_repair_roi()
 
     # ------------------------------------------------------------------ #
     # UI 建構
@@ -245,6 +249,21 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # 自動校正
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _align_to_roi(gray, rect, origin) -> Roi | None:
+        """在灰階圖上吸附棋盤並換算回螢幕座標；失敗回傳 None（不丟例外）。
+
+        gray: 灰階影像；rect: 影像座標 (x, y, w, h) 粗框；origin: 影像原點的螢幕座標。
+        """
+        try:
+            found = board_align.align_to_board(gray, rect, expand_ratio=0.0)
+        except Exception:
+            return None
+        if found is None:
+            return None
+        roi = Roi(x=origin[0] + found[0], y=origin[1] + found[1], width=found[2], height=found[3])
+        return roi if roi.is_valid() else None
+
     def _on_auto_align(self) -> None:
         """以即時畫面偵測 10×15 棋盤，微調目前的 ROI。"""
         if self._roi is None or not self._roi.is_valid():
@@ -272,7 +291,7 @@ class MainWindow(QMainWindow):
             )
             return
         rect = (self._roi.x - left, self._roi.y - top, self._roi.width, self._roi.height)
-        result = board_align.align_to_board(gray, rect, expand_ratio=0.0)
+        result = self._align_to_roi(gray, rect, (left, top))
         if result is None:
             QMessageBox.information(
                 self,
@@ -282,8 +301,86 @@ class MainWindow(QMainWindow):
                 "或使用「重新框選」。",
             )
             return
-        ax, ay, aw, ah = result
-        self._apply_roi(Roi(x=left + ax, y=top + ay, width=aw, height=ah))
+        self._apply_roi(result)
+
+    def _looks_like_board(self, roi: Roi) -> bool:
+        """用真實模板驗證該區域是否為棋盤（UNKNOWN 占比夠低才算）。
+
+        真棋盤（滿盤或已消除）幾乎每格都能確定是 DIGIT 或 EMPTY；
+        桌面圖示/文字等非棋盤內容則大量 UNKNOWN。
+        全灰等素色會全判 EMPTY 而通過——但 align 階段不會把素色當棋盤，
+        兩層是互補的。模板不完整時無法驗證，回傳 True（盡力相信 align 結果）。
+        擷取失敗回傳 False。
+        """
+        if not self._templates.is_complete():
+            return True
+        try:
+            gray = qimage_to_gray(
+                screen_capture.capture_region(roi.x, roi.y, roi.width, roi.height)
+            )
+            board = build_board_state(gray, roi, DigitRecognizer(self._templates))
+        except Exception:
+            return False
+        unknowns = sum(1 for cell in board.cells if cell.state.name == "UNKNOWN")
+        return unknowns / len(board.cells) < 0.3
+
+    def _auto_repair_roi(self) -> None:
+        """啟動時自動修復 ROI：遊戲視窗若移動就吸附到新位置並儲存。
+
+        兩階段：先在舊位置附近找（±30%，小幅移動）；找不到再全螢幕搜尋
+        ＋辨識驗證（大幅移動）。都找不到就沿用舊設定並提示，不擋啟動。
+        """
+        if self._roi is None or not self._roi.is_valid():
+            return
+        saved = self._roi
+        # 階段一：附近搜尋
+        try:
+            margin_x = int(round(saved.width * 0.3))
+            margin_y = int(round(saved.height * 0.3))
+            vl, vt, vw, vh = screen_capture.get_virtual_screen_geometry()
+            left = max(saved.x - margin_x, vl)
+            top = max(saved.y - margin_y, vt)
+            right = min(saved.x + saved.width + margin_x, vl + vw)
+            bottom = min(saved.y + saved.height + margin_y, vt + vh)
+            gray = qimage_to_gray(
+                screen_capture.capture_region(left, top, right - left, bottom - top)
+            )
+            found = self._align_to_roi(
+                gray,
+                (saved.x - left, saved.y - top, saved.width, saved.height),
+                (left, top),
+            )
+        except Exception:
+            return  # 無法擷取（測試環境等）：沿用設定
+        if found is not None:
+            if found == saved:
+                return  # 位置沒變，無事發生
+            self._apply_roi(found)
+            self._note_roi_status("（啟動時已自動對齊到新位置）")
+            return
+        # 階段二：全螢幕搜尋（遊戲視窗大幅移動時）
+        try:
+            full = qimage_to_gray(screen_capture.capture_virtual_screen())
+            candidate = self._align_to_roi(full, (0, 0, vw, vh), (vl, vt))
+        except Exception:
+            return
+        if candidate is None:
+            self._note_roi_status("（未找到棋盤：請先開啟遊戲，再按自動校正）")
+            return
+        if (
+            abs(candidate.width - saved.width) / saved.width > 0.15
+            or abs(candidate.height - saved.height) / saved.height > 0.15
+        ):
+            return  # 尺寸差太多：不敢認，沿用舊設定
+        if not self._looks_like_board(candidate):
+            self._note_roi_status("（未找到棋盤：請先開啟遊戲，再按自動校正）")
+            return
+        self._apply_roi(candidate)
+        self._note_roi_status("（啟動時已自動對齊到新位置）")
+
+    def _note_roi_status(self, suffix: str) -> None:
+        """在狀態列追加一次性說明（下次 _update_status 會恢復正常文字）。"""
+        self.lbl_roi_status.setText(self.lbl_roi_status.text() + suffix)
 
     # ------------------------------------------------------------------ #
     # 測試辨識（Phase 2）

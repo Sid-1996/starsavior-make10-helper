@@ -43,7 +43,9 @@ def fake_capture(monkeypatch):
 def _window(tmp_path):
     from gui.main_window import MainWindow
 
-    win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+    win = MainWindow(
+        auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+    )
     win._apply_roi(Roi(x=0, y=0, width=150, height=100))
     return win
 
@@ -85,7 +87,9 @@ class TestMonitorButtons:
     def test_start_without_roi_stays_stopped(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+        win = MainWindow(
+            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+        )
         assert win.btn_start.isEnabled() is False
         win.close()
 
@@ -235,7 +239,9 @@ class TestFullSimulation:
         frames = [board_a] * 6 + [board_b] * 6
         monkeypatch.setattr(core.screen_capture, "capture_roi", lambda roi: frames.pop(0))
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+        win = MainWindow(
+            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+        )
         win._apply_roi(Roi(x=0, y=0, width=930, height=620))
         win.btn_start.click()
 

@@ -51,7 +51,9 @@ class TestHotkeyToggleWiring:
         from core.board_state import BoardState, Cell, CellState
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+        win = MainWindow(
+            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+        )
         win._apply_roi(Roi(x=0, y=0, width=450, height=300))
         cells = []
         for row in range(10):
@@ -79,7 +81,9 @@ class TestHotkeyToggleWiring:
     def test_f8_without_hint_is_noop(self, qapp, tmp_path):
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+        win = MainWindow(
+            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+        )
         win._on_hotkey_toggle()
         assert win._overlay_muted is False
         assert not win._overlay.isVisible()

@@ -92,7 +92,9 @@ class TestMainWindowWiring:
         from core.settings_store import SettingsStore
         from gui.main_window import MainWindow
 
-        win = MainWindow(store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path)
+        win = MainWindow(
+            auto_repair=False, store=SettingsStore(tmp_path / "settings.json"), log_dir=tmp_path
+        )
         win._apply_roi(Roi(x=0, y=0, width=450, height=300))
         return win
 
