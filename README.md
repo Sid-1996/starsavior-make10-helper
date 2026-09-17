@@ -1,5 +1,7 @@
 # Star Savior 10 消除提示器
 
+繁體中文 | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+
 「數字 10 消除遊戲」的視覺輔助提示器。**只分析畫面並提供視覺提示，不操作遊戲**，滑鼠操作完全由使用者自己完成。
 
 ## 下載（Windows 免安裝綠色版）
@@ -34,7 +36,7 @@
 - [x] **Phase 1**：ROI 框選 + 設定儲存
 - [x] **Phase 2**：10×15 Grid + Cell State + Template Matching（含 1~9 完整模板）
 - [x] **Phase 3**：Rectangle Solver（純演算法，只吃 BoardState）
-- [x] **Phase 4**：Hint Selector（最小 area + 固定掃描順序，只回一個 Hint）
+- [x] **Phase 4**：Hint Selector（最小 area + 固定掃描順序＋同組數字去重，選前 N 個）
 - [x] **Phase 5**：透明 Click-through Overlay（外框 + 起點 + 終點）
 - [x] **Phase 6**：畫面變化偵測（穩定等待 + Hint Lock + 穩定後重辨識）
 - [x] **Phase 7**：整合測試與 UX 修正（含 F8 全域快捷鍵）
@@ -155,7 +157,7 @@ core/
     recognition.py          # DigitRecognizer：白 tile 缺席 → EMPTY；否則模板比對
     board_builder.py        # ROI 畫面 → 切格 → 辨識 → BoardState
     solver.py               # Rectangle Solver：純演算法，BoardState → 全部合法矩形
-    hint_selector.py        # Hint Selector：最小 area + 固定順序，只選唯一提示
+    hint_selector.py        # Hint Selector：最小 area + 固定順序＋同組去重，選前 N 個
     monitor.py              # 畫面穩定追蹤 + Hint Lock（不碰 GUI/擷取）
 gui/
     main_window.py          # 主視窗（一行狀態＋監控開關＋提示數＋首次引導；邏輯仍住這裡）
